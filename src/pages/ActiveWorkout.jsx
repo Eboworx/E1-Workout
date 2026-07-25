@@ -160,6 +160,13 @@ export default function ActiveWorkout() {
 
   const isRestDay = !loading && exercises.length === 0
 
+  async function abandonWorkout() {
+    if (!window.confirm('Abandon this workout? It won\'t be saved.')) return
+    await supabase.from('workout_sessions').delete().eq('id', sessionId)
+    localStorage.removeItem('activeSessionId')
+    navigate('/')
+  }
+
   async function finishWorkout() {
     if (!window.confirm('Finish this workout?')) return
     setFinishing(true)
@@ -310,11 +317,14 @@ export default function ActiveWorkout() {
       </div>
 
       {/* Bottom finish */}
-      <div className="sticky bottom-0 px-4 py-4" style={{ background: 'var(--bg)', borderTop: '1px solid var(--border)', paddingBottom: 'max(16px, env(safe-area-inset-bottom, 16px))' }}>
+      <div className="sticky bottom-0 px-4 pt-4" style={{ background: 'var(--bg)', borderTop: '1px solid var(--border)', paddingBottom: 'max(16px, env(safe-area-inset-bottom, 16px))' }}>
         <button onClick={finishWorkout} disabled={finishing || done === 0}
           className="w-full font-bold py-4 rounded-2xl text-base disabled:opacity-30"
           style={{ background: 'var(--text)', color: 'var(--bg)' }}>
           {finishing ? 'Saving...' : `Finish Workout (${done}/${total} sets)`}
+        </button>
+        <button onClick={abandonWorkout} style={{ width: '100%', marginTop: '10px', background: 'none', border: 'none', color: 'var(--text-3)', fontSize: '12px', fontFamily: "'Oxanium', sans-serif", letterSpacing: '0.1em', cursor: 'pointer', padding: '4px 0 0' }}>
+          Abandon workout
         </button>
       </div>
     </div>
