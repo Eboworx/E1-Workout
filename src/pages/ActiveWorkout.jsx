@@ -14,7 +14,7 @@ export default function ActiveWorkout() {
   const [finishing, setFinishing] = useState(false)
   const [progressions, setProgressions] = useState([])
   const [elapsed, setElapsed] = useState(0)
-  const [history, setHistory] = useState({}) // exId → [{date, sets}]
+  const [history, setHistory] = useState({})
   const timerRef = useRef(null)
   const startRef = useRef(Date.now())
 
@@ -33,6 +33,9 @@ export default function ActiveWorkout() {
     if (!sess) { navigate('/'); return }
     setSession(sess)
 
+    // Persist so user can navigate away and resume
+    localStorage.setItem('activeSessionId', sessionId)
+
     const { data: exs } = await supabase
       .from('program_exercises').select('*')
       .eq('program_day_id', sess.program_day_id).order('exercise_order')
@@ -48,7 +51,6 @@ export default function ActiveWorkout() {
     setSetLogs(logs)
     setLoading(false)
 
-    // Load history: last 3 sessions for this day
     if (exs?.length) loadHistory(sess, exs)
   }
 
@@ -71,10 +73,10 @@ export default function ActiveWorkout() {
     const h = {}
     for (const ex of exs) {
       h[ex.id] = prevSessions
-        .map((sess) => ({
-          date: sess.completed_at,
+        .map((s) => ({
+          date: s.completed_at,
           sets: (logs || []).filter(
-            (l) => l.session_id === sess.id && l.program_exercise_id === ex.id
+            (l) => l.session_id === s.id && l.program_exercise_id === ex.id
           ),
         }))
         .filter((s) => s.sets.length > 0)
@@ -89,6 +91,33 @@ export default function ActiveWorkout() {
         i === setIdx ? { ...s, [field]: value === '' ? null : Number(value) } : s
       ),
     }))
+  }
+
+  function addSet(exerciseId) {
+    const ex = exercises.find((e) => e.id === exerciseId)
+    setSetLogs((prev) => ({
+      ...prev,
+      [exerciseId]: [
+        ...prev[exerciseId],
+        {
+          set_number: prev[exerciseId].length + 1,
+          actual_reps: null,
+          weight: parseFloat(ex?.current_weight || 0),
+          completed: false,
+        },
+      ],
+    }))
+  }
+
+  async function saveRepRange(exerciseId, min, max) {
+    const minN = parseInt(min, 10)
+    const maxN = parseInt(max, 10)
+    if (!minN || !maxN || minN > maxN) return
+    setExercises((prev) =>
+      prev.map((e) => e.id === exerciseId ? { ...e, rep_min: minN, rep_max: maxN } : e)
+    )
+    await supabase.from('program_exercises')
+      .update({ rep_min: minN, rep_max: maxN }).eq('id', exerciseId)
   }
 
   function toggleComplete(exerciseId, setIdx) {
@@ -132,6 +161,7 @@ export default function ActiveWorkout() {
   const isRestDay = !loading && exercises.length === 0
 
   async function finishWorkout() {
+    if (!window.confirm('Finish this workout?')) return
     setFinishing(true)
     try {
       const allLogs = []
@@ -155,6 +185,7 @@ export default function ActiveWorkout() {
         await supabase.from('program_exercises')
           .update({ current_weight: p.newWeight }).eq('id', p.exerciseId)
       }
+      localStorage.removeItem('activeSessionId')
       if (progs.length > 0) setProgressions(progs)
       else navigate('/')
     } catch (err) {
@@ -197,9 +228,9 @@ export default function ActiveWorkout() {
       <div className="min-h-screen flex flex-col" style={{ background: 'var(--bg)' }}>
         <div className="sticky top-0 z-10 px-4 pt-12 pb-3" style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}>
           <div className="flex items-center justify-between">
-            <button onClick={() => { if (confirm('Abandon session?')) navigate('/') }}>
+            <button onClick={() => navigate('/')} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}>
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{ color: 'var(--text-2)' }}>
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
               </svg>
             </button>
             <div className="text-center">
@@ -210,7 +241,6 @@ export default function ActiveWorkout() {
           </div>
         </div>
         <div className="flex-1 flex flex-col items-center justify-center px-6 text-center">
-          <p className="text-4xl mb-4">—</p>
           <h2 className="text-xl font-semibold mb-2" style={{ color: 'var(--text)' }}>{session?.day_name}</h2>
           <p className="text-sm mb-10" style={{ color: 'var(--text-3)' }}>No exercises — log this day as complete.</p>
           <button onClick={finishWorkout} disabled={finishing}
@@ -232,9 +262,9 @@ export default function ActiveWorkout() {
       {/* Header */}
       <div className="sticky top-0 z-10 px-4 pb-3" style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border)', paddingTop: 'max(12px, env(safe-area-inset-top, 12px))' }}>
         <div className="flex items-center justify-between mb-2">
-          <button onClick={() => { if (confirm('Abandon workout?')) navigate('/') }}>
+          <button onClick={() => navigate('/')} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}>
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{ color: 'var(--text-2)' }}>
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
           </button>
           <div className="text-center">
@@ -272,13 +302,15 @@ export default function ActiveWorkout() {
               onUpdateSet={(setIdx, field, value) => updateSet(ex.id, setIdx, field, value)}
               onToggleComplete={(setIdx) => toggleComplete(ex.id, setIdx)}
               onNavigate={() => navigate(`/exercise/${ex.id}`)}
+              onAddSet={() => addSet(ex.id)}
+              onSaveRepRange={(min, max) => saveRepRange(ex.id, min, max)}
             />
           )
         })}
       </div>
 
       {/* Bottom finish */}
-      <div className="sticky bottom-0 px-4 py-4 safe-bottom" style={{ background: 'var(--bg)', borderTop: '1px solid var(--border)' }}>
+      <div className="sticky bottom-0 px-4 py-4" style={{ background: 'var(--bg)', borderTop: '1px solid var(--border)', paddingBottom: 'max(16px, env(safe-area-inset-bottom, 16px))' }}>
         <button onClick={finishWorkout} disabled={finishing || done === 0}
           className="w-full font-bold py-4 rounded-2xl text-base disabled:opacity-30"
           style={{ background: 'var(--text)', color: 'var(--bg)' }}>
@@ -291,11 +323,13 @@ export default function ActiveWorkout() {
 
 // ── Swipeable exercise card ──────────────────────────────────────────────────
 
-function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, onUpdateSet, onToggleComplete, onNavigate }) {
+function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, onUpdateSet, onToggleComplete, onNavigate, onAddSet, onSaveRepRange }) {
   const scrollRef = useRef(null)
   const [onHistoryPanel, setOnHistoryPanel] = useState(false)
+  const [editReps, setEditReps] = useState(false)
+  const [editMin, setEditMin] = useState(ex.rep_min)
+  const [editMax, setEditMax] = useState(ex.rep_max)
 
-  // Start scrolled to the exercise panel (panel 2, on the right)
   useEffect(() => {
     const el = scrollRef.current
     if (el) el.scrollLeft = el.scrollWidth / 2
@@ -304,8 +338,18 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, onUpdateSet, onTo
   function handleScroll() {
     const el = scrollRef.current
     if (!el) return
-    const atHistory = el.scrollLeft < el.clientWidth * 0.6
-    setOnHistoryPanel(atHistory)
+    setOnHistoryPanel(el.scrollLeft < el.clientWidth * 0.6)
+  }
+
+  function openEditReps() {
+    setEditMin(ex.rep_min)
+    setEditMax(ex.rep_max)
+    setEditReps(true)
+  }
+
+  function confirmEditReps() {
+    onSaveRepRange(editMin, editMax)
+    setEditReps(false)
   }
 
   const cardStyle = {
@@ -320,21 +364,17 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, onUpdateSet, onTo
 
   return (
     <div style={{ position: 'relative' }}>
-      {/* Scroll track */}
       <div
         ref={scrollRef}
         onScroll={handleScroll}
         style={{
-          display: 'flex',
-          overflowX: 'scroll',
-          scrollSnapType: 'x mandatory',
-          scrollbarWidth: 'none',
-          msOverflowStyle: 'none',
-          WebkitOverflowScrolling: 'touch',
+          display: 'flex', overflowX: 'scroll',
+          scrollSnapType: 'x mandatory', scrollbarWidth: 'none',
+          msOverflowStyle: 'none', WebkitOverflowScrolling: 'touch',
           borderRadius: '16px',
         }}
       >
-        {/* ── Panel 1: History (left — swipe right to reveal) ── */}
+        {/* ── Panel 1: History ── */}
         <div style={{ ...cardStyle, borderColor: 'var(--border)', background: 'var(--surface)' }}>
           <div style={{ padding: '12px 16px 8px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
@@ -343,7 +383,6 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, onUpdateSet, onTo
             </div>
             <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: 0 }}>History</p>
           </div>
-
           <div style={{ padding: '12px 16px 14px' }}>
             {exHistory.length === 0 ? (
               <p style={{ fontSize: '13px', color: 'var(--text-3)', textAlign: 'center', padding: '20px 0' }}>No history yet</p>
@@ -356,18 +395,12 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, onUpdateSet, onTo
                   {session.sets.map((s, i) => {
                     const hitTarget = s.actual_reps >= s.target_reps
                     return (
-                      <div key={i} style={{
-                        display: 'flex', alignItems: 'center', gap: '10px',
-                        padding: '5px 8px', borderRadius: '8px', marginBottom: '3px',
-                        background: 'var(--surface-2)',
-                      }}>
+                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '5px 8px', borderRadius: '8px', marginBottom: '3px', background: 'var(--surface-2)' }}>
                         <span style={{ fontSize: '11px', color: 'var(--text-3)', width: '16px' }}>#{s.set_number}</span>
                         <span style={{ fontSize: '14px', color: 'var(--text)', fontWeight: 500 }}>{s.weight}</span>
                         <span style={{ fontSize: '11px', color: 'var(--text-3)' }}>{ex.weight_unit}</span>
                         <span style={{ fontSize: '12px', color: 'var(--text-3)' }}>×</span>
-                        <span style={{ fontSize: '14px', color: hitTarget ? 'var(--text)' : '#c8a84b', fontWeight: 500 }}>
-                          {s.actual_reps}
-                        </span>
+                        <span style={{ fontSize: '14px', color: hitTarget ? 'var(--text)' : '#c8a84b', fontWeight: 500 }}>{s.actual_reps}</span>
                         <span style={{ fontSize: '11px', color: 'var(--text-3)' }}>reps</span>
                         {hitTarget && <span style={{ fontSize: '11px', color: 'var(--text-2)', marginLeft: 'auto' }}>✓</span>}
                       </div>
@@ -379,15 +412,35 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, onUpdateSet, onTo
           </div>
         </div>
 
-        {/* ── Panel 2: Live exercise (right — default view) ── */}
+        {/* ── Panel 2: Live ── */}
         <div style={{ ...cardStyle }}>
-          {/* Exercise header */}
           <div style={{ padding: '12px 16px 8px', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
             <div style={{ flex: 1 }}>
-              <h3 style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text)', margin: '0 0 2px' }}>{ex.name}</h3>
-              <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: 0 }}>
-                {ex.sets} sets · {ex.rep_min}–{ex.rep_max} reps · {ex.current_weight} {ex.weight_unit}
-              </p>
+              <h3 style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text)', margin: '0 0 4px' }}>{ex.name}</h3>
+              {editReps ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                  <span style={{ fontSize: '11px', color: 'var(--text-3)' }}>{sets.length} sets ·</span>
+                  <input type="number" value={editMin}
+                    onChange={(e) => setEditMin(e.target.value)}
+                    onFocus={(e) => e.target.select()}
+                    style={{ width: 36, textAlign: 'center', fontSize: '12px', background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border-2)', borderRadius: '6px', padding: '2px 4px', outline: 'none' }}
+                  />
+                  <span style={{ fontSize: '11px', color: 'var(--text-3)' }}>–</span>
+                  <input type="number" value={editMax}
+                    onChange={(e) => setEditMax(e.target.value)}
+                    onFocus={(e) => e.target.select()}
+                    style={{ width: 36, textAlign: 'center', fontSize: '12px', background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border-2)', borderRadius: '6px', padding: '2px 4px', outline: 'none' }}
+                  />
+                  <span style={{ fontSize: '11px', color: 'var(--text-3)' }}>reps</span>
+                  <button onClick={confirmEditReps} style={{ background: 'none', border: 'none', color: 'var(--text-2)', fontSize: '15px', cursor: 'pointer', padding: '0 3px' }}>✓</button>
+                  <button onClick={() => setEditReps(false)} style={{ background: 'none', border: 'none', color: 'var(--text-3)', fontSize: '13px', cursor: 'pointer', padding: '0 3px' }}>✕</button>
+                </div>
+              ) : (
+                <p onClick={openEditReps} style={{ fontSize: '11px', color: 'var(--text-3)', margin: 0, cursor: 'pointer' }}>
+                  {sets.length} sets · {ex.rep_min}–{ex.rep_max} reps · {ex.current_weight} {ex.weight_unit}
+                  <span style={{ marginLeft: 5, opacity: 0.5 }}>✎</span>
+                </p>
+              )}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
               {allDone && <span style={{ fontSize: '13px', color: 'var(--text-2)' }}>✓</span>}
@@ -424,6 +477,7 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, onUpdateSet, onTo
                   type="number"
                   value={set.weight ?? ''}
                   onChange={(e) => onUpdateSet(idx, 'weight', e.target.value)}
+                  onFocus={(e) => e.target.select()}
                   style={{ width: '100%', textAlign: 'center', borderRadius: '8px', padding: '6px 4px', fontSize: '14px', background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)', outline: 'none' }}
                   placeholder={`${ex.current_weight}`}
                   step="2.5" min="0" inputMode="decimal"
@@ -432,6 +486,7 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, onUpdateSet, onTo
                   type="number"
                   value={set.actual_reps ?? ''}
                   onChange={(e) => onUpdateSet(idx, 'actual_reps', e.target.value)}
+                  onFocus={(e) => e.target.select()}
                   className={set.actual_reps !== null ? repStatusClass(set.actual_reps, ex.rep_min, ex.rep_max) : ''}
                   style={{ width: '100%', textAlign: 'center', borderRadius: '8px', padding: '6px 4px', fontSize: '14px', background: 'var(--surface)', color: set.actual_reps === null ? 'var(--text-3)' : undefined, border: '1px solid var(--border)', outline: 'none' }}
                   placeholder={`${ex.rep_min}–${ex.rep_max}`}
@@ -441,10 +496,10 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, onUpdateSet, onTo
                   <button
                     onClick={() => onToggleComplete(idx)}
                     style={{
-                      width: 32, height: 32, borderRadius: '50%', border: `2px solid ${set.completed ? 'var(--text)' : 'var(--border-2)'}`,
+                      width: 32, height: 32, borderRadius: '50%',
+                      border: `2px solid ${set.completed ? 'var(--text)' : 'var(--border-2)'}`,
                       background: set.completed ? 'var(--text)' : 'transparent',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      cursor: 'pointer',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
                     }}
                   >
                     <svg width="14" height="14" fill="none" stroke={set.completed ? 'var(--bg)' : 'transparent'} viewBox="0 0 24 24">
@@ -455,8 +510,21 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, onUpdateSet, onTo
               </div>
             ))}
 
+            {/* Add set */}
+            <button
+              onClick={onAddSet}
+              style={{
+                width: '100%', marginTop: '4px',
+                background: 'none', border: '1px dashed var(--border)',
+                borderRadius: '10px', padding: '8px',
+                fontSize: '11px', color: 'var(--text-3)',
+                cursor: 'pointer', letterSpacing: '0.12em',
+                fontFamily: "'Oxanium', sans-serif",
+              }}
+            >+ ADD SET</button>
+
             {allDone && sets.every((s) => s.actual_reps >= ex.rep_max) && (
-              <p style={{ fontSize: '11px', textAlign: 'center', color: 'var(--text-2)', marginTop: '4px' }}>
+              <p style={{ fontSize: '11px', textAlign: 'center', color: 'var(--text-2)', marginTop: '8px' }}>
                 All sets at max — weight increases {ex.weight_increment}{ex.weight_unit} next session
               </p>
             )}
@@ -464,7 +532,7 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, onUpdateSet, onTo
         </div>
       </div>
 
-      {/* Scroll position dots */}
+      {/* Scroll dots */}
       <div style={{ display: 'flex', justifyContent: 'center', gap: '5px', marginTop: '6px' }}>
         <div style={{ width: 5, height: 5, borderRadius: '50%', background: onHistoryPanel ? 'var(--text-2)' : 'var(--border-2)', transition: 'background 0.2s' }} />
         <div style={{ width: 5, height: 5, borderRadius: '50%', background: onHistoryPanel ? 'var(--border-2)' : 'var(--text-2)', transition: 'background 0.2s' }} />

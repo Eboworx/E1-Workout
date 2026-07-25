@@ -41,6 +41,7 @@ export default function WorkoutPicker() {
       .insert({ user_id: user.id, program_day_id: day.id, day_name: day.name })
       .select().single()
     if (error) { alert(error.message); setStarting(null); return }
+    localStorage.setItem('activeSessionId', session.id)
     navigate(`/workout/${session.id}`)
   }
 
