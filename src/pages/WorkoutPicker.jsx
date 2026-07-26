@@ -102,9 +102,17 @@ export default function WorkoutPicker() {
         </button>
         <div>
           <p style={{ fontFamily: "'Oxanium', sans-serif", fontSize: '10px', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-3)', margin: '0 0 2px' }}>Active Program</p>
-          <h2 style={{ fontFamily: "'Oxanium', sans-serif", fontSize: '20px', fontWeight: 400, color: 'var(--text)', margin: 0, letterSpacing: '0.02em' }}>
-            {activeProgram ? activeProgram.name : 'No program'}
-          </h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <h2 style={{ fontFamily: "'Oxanium', sans-serif", fontSize: '20px', fontWeight: 400, color: 'var(--text)', margin: 0, letterSpacing: '0.02em' }}>
+              {activeProgram ? activeProgram.name : 'No program'}
+            </h2>
+            {activeProgram && (
+              <button onClick={() => navigate(`/programs/${activeProgram.id}/edit`)}
+                style={{ background: 'none', border: 'none', color: 'var(--text-3)', fontSize: '11px', fontFamily: "'Oxanium', sans-serif", letterSpacing: '0.1em', cursor: 'pointer', padding: 0 }}>
+                Edit
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
