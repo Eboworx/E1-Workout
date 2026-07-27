@@ -40,10 +40,18 @@ export default function Dashboard() {
     const savedId = localStorage.getItem('activeSessionId')
     if (savedId) {
       const { data: openSession } = await supabase
-        .from('workout_sessions').select('id, completed_at')
+        .from('workout_sessions').select('id, completed_at, started_at')
         .eq('id', savedId).single()
       if (openSession && !openSession.completed_at) {
-        setResumeSessionId(savedId)
+        // Auto-clear if session is older than 12 hours (stale)
+        const startedAt = new Date(openSession.started_at || 0)
+        const ageHours = (Date.now() - startedAt) / 1000 / 3600
+        if (ageHours > 12) {
+          await supabase.from('workout_sessions').delete().eq('id', savedId)
+          localStorage.removeItem('activeSessionId')
+        } else {
+          setResumeSessionId(savedId)
+        }
       } else {
         localStorage.removeItem('activeSessionId')
       }
@@ -134,26 +142,25 @@ export default function Dashboard() {
 
         {/* Resume workout banner */}
         {resumeSessionId && (
-          <button
-            onClick={() => navigate(`/workout/${resumeSessionId}`)}
-            style={{
-              width: '100%', textAlign: 'left', marginBottom: '8px',
-              background: '#1a1a0f', border: '1px solid #3a3a1a',
-              borderRadius: '12px', padding: '12px 16px',
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              cursor: 'pointer',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div style={{ width: '100%', marginBottom: '8px', background: '#1a1a0f', border: '1px solid #3a3a1a', borderRadius: '12px', padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <button
+              onClick={() => navigate(`/workout/${resumeSessionId}`)}
+              style={{ flex: 1, textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px', padding: 0 }}
+            >
               <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#c8a84b', flexShrink: 0 }} />
               <p style={{ fontFamily: "'Oxanium', sans-serif", fontSize: '13px', color: '#c8a84b', margin: 0, letterSpacing: '0.06em' }}>
                 Workout in progress — tap to resume
               </p>
-            </div>
-            <svg width="14" height="14" fill="none" stroke="#c8a84b" strokeWidth="1.8" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-            </svg>
-          </button>
+            </button>
+            <button
+              onClick={async () => {
+                await supabase.from('workout_sessions').delete().eq('id', resumeSessionId)
+                localStorage.removeItem('activeSessionId')
+                setResumeSessionId(null)
+              }}
+              style={{ background: 'none', border: 'none', color: '#c8a84b', opacity: 0.5, fontSize: '16px', cursor: 'pointer', padding: '0 0 0 12px', flexShrink: 0 }}
+            >✕</button>
+          </div>
         )}
 
         {/* Module cards — fill remaining space evenly */}
