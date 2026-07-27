@@ -94,8 +94,16 @@ export default function ProgramBuilder() {
     try {
       let programId = id
       if (id) {
-        await supabase.from('programs').update({ name, description, is_active: isActive }).eq('id', id)
-        await supabase.from('program_days').delete().eq('program_id', id)
+        const { error: progErr } = await supabase.from('programs').update({ name, description, is_active: isActive }).eq('id', id)
+        if (progErr) throw progErr
+        // Must delete exercises first (FK constraint), then days
+        const { data: existingDays } = await supabase.from('program_days').select('id').eq('program_id', id)
+        if (existingDays?.length) {
+          const { error: exErr } = await supabase.from('program_exercises').delete().in('program_day_id', existingDays.map((d) => d.id))
+          if (exErr) throw exErr
+        }
+        const { error: dayErr } = await supabase.from('program_days').delete().eq('program_id', id)
+        if (dayErr) throw dayErr
       } else {
         if (isActive) await supabase.from('programs').update({ is_active: false }).eq('user_id', user.id)
         const { data: prog } = await supabase

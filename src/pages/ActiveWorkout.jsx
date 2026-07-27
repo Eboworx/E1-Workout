@@ -136,6 +136,26 @@ export default function ActiveWorkout() {
     })
   }
 
+  function setExerciseSetCount(exerciseId, count) {
+    const target = parseInt(count)
+    if (isNaN(target) || target < 1 || target > 10) return
+    const ex = exercises.find((e) => e.id === exerciseId)
+    setSetLogs((prev) => {
+      const current = prev[exerciseId] || []
+      if (target === current.length) return prev
+      if (target > current.length) {
+        const extra = Array.from({ length: target - current.length }, (_, i) => ({
+          set_number: current.length + i + 1,
+          actual_reps: null,
+          weight: parseFloat(ex?.current_weight || 0),
+          completed: false,
+        }))
+        return { ...prev, [exerciseId]: [...current, ...extra] }
+      }
+      return { ...prev, [exerciseId]: current.slice(0, target) }
+    })
+  }
+
   async function saveRepRange(exerciseId, min, max) {
     const minN = parseInt(min, 10)
     const maxN = parseInt(max, 10)
@@ -352,7 +372,7 @@ export default function ActiveWorkout() {
       </div>
 
       {/* Exercises */}
-      <div className="flex-1 px-4 py-4 pb-10 space-y-4 max-w-lg mx-auto w-full">
+      <div className="flex-1 px-4 py-4 space-y-4 max-w-lg mx-auto w-full" style={{ paddingBottom: '160px' }}>
         {exercises.map((ex) => {
           const sets = setLogs[ex.id] || []
           const { done: exDone, total: exTotal } = exerciseProgress(ex.id)
@@ -373,6 +393,7 @@ export default function ActiveWorkout() {
               onAddSet={() => addSet(ex.id)}
               onRemoveLastSet={() => removeLastSet(ex.id)}
               onSaveRepRange={(min, max) => saveRepRange(ex.id, min, max)}
+              onSetCount={(count) => setExerciseSetCount(ex.id, count)}
             />
           )
         })}
@@ -485,12 +506,13 @@ export default function ActiveWorkout() {
 
 // ── Swipeable exercise card ──────────────────────────────────────────────────
 
-function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, onUpdateSet, onToggleComplete, onNavigate, onAddSet, onRemoveLastSet, onSaveRepRange }) {
+function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, onUpdateSet, onToggleComplete, onNavigate, onAddSet, onRemoveLastSet, onSaveRepRange, onSetCount }) {
   const scrollRef = useRef(null)
   const [onHistoryPanel, setOnHistoryPanel] = useState(false)
   const [editReps, setEditReps] = useState(false)
   const [editMin, setEditMin] = useState(ex.rep_min)
   const [editMax, setEditMax] = useState(ex.rep_max)
+  const [editSets, setEditSets] = useState(sets.length)
 
   const isSuperset = ex.is_superset
 
@@ -508,11 +530,16 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, onUpdateSet, onTo
   function openEditReps() {
     setEditMin(ex.rep_min)
     setEditMax(ex.rep_max)
+    setEditSets(sets.length)
     setEditReps(true)
   }
 
   function confirmEditReps() {
     onSaveRepRange(editMin, editMax)
+    const targetSets = parseInt(editSets)
+    if (!isNaN(targetSets) && targetSets !== sets.length) {
+      onSetCount(targetSets)
+    }
     setEditReps(false)
   }
 
@@ -593,8 +620,11 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, onUpdateSet, onTo
             <div style={{ flex: 1 }}>
               <h3 style={{ fontSize: isSuperset ? '13px' : '15px', fontWeight: 600, color: isSuperset ? '#c8a84b' : 'var(--text)', margin: '0 0 4px' }}>{ex.name}</h3>
               {editReps ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--text-3)' }}>{sets.length} sets ·</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
+                  <input type="number" value={editSets} onChange={(e) => setEditSets(e.target.value)} onFocus={(e) => e.target.select()}
+                    min="1" max="10"
+                    style={{ width: 30, textAlign: 'center', fontSize: '12px', background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border-2)', borderRadius: '6px', padding: '2px 4px', outline: 'none' }} />
+                  <span style={{ fontSize: '11px', color: 'var(--text-3)' }}>sets ·</span>
                   <input type="number" value={editMin} onChange={(e) => setEditMin(e.target.value)} onFocus={(e) => e.target.select()}
                     style={{ width: 34, textAlign: 'center', fontSize: '12px', background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border-2)', borderRadius: '6px', padding: '2px 4px', outline: 'none' }} />
                   <span style={{ fontSize: '11px', color: 'var(--text-3)' }}>–</span>
