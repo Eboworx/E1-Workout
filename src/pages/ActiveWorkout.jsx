@@ -51,21 +51,58 @@ export default function ActiveWorkout() {
       .eq('program_day_id', sess.program_day_id).order('exercise_order')
     setExercises(exs || [])
 
-    // Build default logs
+    // Load last session's per-set weights so pyramid/variable sets carry over correctly.
+    // The increment = current_weight − last_session_set1_weight (0 if no progression fired).
+    const lastWeightsByExercise = {}
+    if (exs?.length) {
+      const { data: lastSession } = await supabase
+        .from('workout_sessions')
+        .select('id')
+        .eq('program_day_id', sess.program_day_id)
+        .not('completed_at', 'is', null)
+        .neq('id', sessionId)
+        .order('completed_at', { ascending: false })
+        .limit(1)
+        .single()
+
+      if (lastSession) {
+        const { data: lastLogs } = await supabase
+          .from('set_logs')
+          .select('program_exercise_id, set_number, weight')
+          .eq('session_id', lastSession.id)
+          .in('program_exercise_id', exs.map((e) => e.id))
+          .order('set_number')
+
+        for (const ex of exs) {
+          const logs = (lastLogs || [])
+            .filter((l) => l.program_exercise_id === ex.id)
+            .sort((a, b) => a.set_number - b.set_number)
+          if (logs.length > 0) {
+            // How much did progression bump this exercise? (0 if no progression)
+            const increment = parseFloat(ex.current_weight) - logs[0].weight
+            lastWeightsByExercise[ex.id] = logs.map((l) => l.weight + increment)
+          }
+        }
+      }
+    }
+
+    // Build default logs — use last session's per-set weights when available
     const defaultLogs = {}
     for (const ex of exs || []) {
+      const prevWeights = lastWeightsByExercise[ex.id]
       defaultLogs[ex.id] = Array.from({ length: ex.sets }, (_, i) => ({
-        set_number: i + 1, actual_reps: null,
-        weight: parseFloat(ex.current_weight), completed: false,
+        set_number: i + 1,
+        actual_reps: null,
+        weight: prevWeights ? (prevWeights[i] ?? parseFloat(ex.current_weight)) : parseFloat(ex.current_weight),
+        completed: false,
       }))
     }
 
-    // Restore saved progress if available
+    // Restore saved in-progress data if available (overrides defaults)
     const saved = localStorage.getItem(PROGRESS_KEY(sessionId))
     if (saved) {
       try {
         const parsed = JSON.parse(saved)
-        // Merge: use saved progress for existing exercises, default for any new ones
         const merged = { ...defaultLogs }
         for (const key of Object.keys(parsed)) {
           if (merged[key]) merged[key] = parsed[key]
