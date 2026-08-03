@@ -76,13 +76,15 @@ export default function ActiveWorkout() {
       .order('completed_at', { ascending: true })
     setSessionHistory(allPast || [])
 
-    // Load last session's per-set weights so pyramid sets carry over correctly
+    // Load last session's per-set weights so pyramid sets carry over correctly.
+    // Progression: if every set hit its target reps last session → add weight_increment.
+    // Otherwise carry exact weights forward. No current_weight arithmetic needed.
     const lastWeightsByExercise = {}
     if (exs?.length && allPast?.length) {
       const lastSession = allPast[allPast.length - 1]
       const { data: lastLogs } = await supabase
         .from('set_logs')
-        .select('program_exercise_id, set_number, weight')
+        .select('program_exercise_id, set_number, weight, actual_reps, target_reps')
         .eq('session_id', lastSession.id)
         .in('program_exercise_id', exs.map((e) => e.id))
         .order('set_number')
@@ -92,8 +94,11 @@ export default function ActiveWorkout() {
           .filter((l) => l.program_exercise_id === ex.id)
           .sort((a, b) => a.set_number - b.set_number)
         if (logs.length > 0) {
-          const increment = parseFloat(ex.current_weight) - logs[0].weight
-          lastWeightsByExercise[ex.id] = logs.map((l) => l.weight + increment)
+          const allHitTarget = logs.every(
+            (l) => l.actual_reps !== null && l.actual_reps >= (l.target_reps ?? ex.rep_max)
+          )
+          const increment = allHitTarget ? parseFloat(ex.weight_increment || 0) : 0
+          lastWeightsByExercise[ex.id] = logs.map((l) => parseFloat(l.weight) + increment)
         }
       }
     }
