@@ -46,7 +46,7 @@ export default function Dashboard() {
         // Auto-clear if session is older than 12 hours (stale)
         const startedAt = new Date(openSession.started_at || 0)
         const ageHours = (Date.now() - startedAt) / 1000 / 3600
-        if (ageHours > 12) {
+        if (ageHours > 168) { // 7 days
           await supabase.from('workout_sessions').delete().eq('id', savedId)
           localStorage.removeItem('activeSessionId')
         } else {
