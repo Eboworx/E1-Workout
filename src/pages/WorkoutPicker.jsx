@@ -17,6 +17,9 @@ function getWeekBounds() {
 
 const OVERRIDE_KEY = (programId) => `e1_next_override_${programId}`
 
+// Mon-first planned week; overridden by programs.week_schedule when set
+const DEFAULT_SCHEDULE = ['Lower 1', 'Push', 'Run', 'Lower 2', 'Pull', 'Run', 'Recover']
+
 // Week-strip bubble labels:
 // "Lower 1" → L1 · "Push" → PS · "Pull" → PL · "Run" → RUN · "Recover" → REC
 // "Upper Body" → UB · fallback: first two letters
@@ -191,6 +194,10 @@ export default function WorkoutPicker() {
   }
   const hero = days[heroIdx]
 
+  const schedule = Array.isArray(activeProgram?.week_schedule) && activeProgram.week_schedule.length === 7
+    ? activeProgram.week_schedule
+    : DEFAULT_SCHEDULE
+
   const queueDays = days.filter((d, i) => i !== heroIdx && !doneDayIds.includes(d.id))
   const doneDays = days.filter((d) => doneDayIds.includes(d.id))
 
@@ -259,13 +266,23 @@ export default function WorkoutPicker() {
               const sess = weekdaySlots[i]
               const isToday = i === todayIdx
               const isPastOrToday = i <= todayIdx
+              const planned = schedule[i]
               const slotDate = new Date(monday)
               slotDate.setDate(monday.getDate() + i)
               return (
                 <div key={i} style={{ textAlign: 'center' }}>
                   <p style={{ fontFamily: 'var(--font-display)', fontSize: '10px', color: isToday ? 'var(--text)' : 'var(--text-3)', margin: '0 0 6px' }}>{letter}</p>
                   <button
-                    onClick={() => isPastOrToday && setBackfillDate(slotDate)}
+                    onClick={() => {
+                      if (!isPastOrToday) return
+                      // Prefill quick log if the planned activity isn't a program day
+                      if (planned && !days.some((d) => d.name.toLowerCase() === planned.toLowerCase())) {
+                        setQuickName(planned)
+                      } else {
+                        setQuickName('')
+                      }
+                      setBackfillDate(slotDate)
+                    }}
                     aria-label={`Log workout for ${slotDate.toLocaleDateString('en-US', { weekday: 'long' })}`}
                     style={{
                       width: 38, height: 38, margin: '0 auto', borderRadius: '50%',
@@ -276,8 +293,8 @@ export default function WorkoutPicker() {
                     }}>
                     {sess ? (
                       <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', fontWeight: 600, color: 'var(--bg)' }}>{dayInitials(sess.day_name)}</span>
-                    ) : isToday && hero ? (
-                      <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', color: 'var(--text-2)' }}>{dayInitials(hero.name)}</span>
+                    ) : planned ? (
+                      <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', color: isToday ? 'var(--text-2)' : 'var(--text-3)' }}>{dayInitials(planned)}</span>
                     ) : isPastOrToday ? (
                       <span style={{ fontFamily: 'var(--font-display)', fontSize: '13px', color: 'var(--text-3)', fontWeight: 300 }}>+</span>
                     ) : null}
