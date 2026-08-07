@@ -35,6 +35,9 @@ export default function WorkoutPicker() {
   const [totalSessions, setTotalSessions] = useState(0)
   const [lastSession, setLastSession] = useState(null)
   const [overrideId, setOverrideId] = useState(null)
+  const [backfillDate, setBackfillDate] = useState(null) // Date — day being retro-logged
+  const [quickName, setQuickName] = useState('')
+  const [backfillSaving, setBackfillSaving] = useState(false)
 
   useEffect(() => { loadData() }, [])
 
@@ -106,6 +109,49 @@ export default function WorkoutPicker() {
   function makeNext(dayId) {
     setOverrideId(dayId)
     if (activeProgram) localStorage.setItem(OVERRIDE_KEY(activeProgram.id), dayId)
+  }
+
+  // ── Retroactive logging ──
+  function backfillNoon() {
+    const d = new Date(backfillDate)
+    d.setHours(12, 0, 0, 0)
+    return d.toISOString()
+  }
+
+  async function backfillQuickLog() {
+    if (!quickName.trim()) return
+    setBackfillSaving(true)
+    const iso = backfillNoon()
+    const { error } = await supabase.from('workout_sessions')
+      .insert({ user_id: user.id, day_name: quickName.trim(), started_at: iso, completed_at: iso })
+    setBackfillSaving(false)
+    if (error) { alert(error.message); return }
+    setBackfillDate(null)
+    setQuickName('')
+    loadData()
+  }
+
+  async function backfillMarkDone(day) {
+    setBackfillSaving(true)
+    const iso = backfillNoon()
+    const { error } = await supabase.from('workout_sessions')
+      .insert({ user_id: user.id, program_day_id: day.id, day_name: day.name, started_at: iso, completed_at: iso })
+    setBackfillSaving(false)
+    if (error) { alert(error.message); return }
+    setBackfillDate(null)
+    loadData()
+  }
+
+  async function backfillWithSets(day) {
+    setBackfillSaving(true)
+    const iso = backfillNoon()
+    const { data: session, error } = await supabase.from('workout_sessions')
+      .insert({ user_id: user.id, program_day_id: day.id, day_name: day.name, started_at: iso })
+      .select().single()
+    setBackfillSaving(false)
+    if (error) { alert(error.message); return }
+    localStorage.setItem('activeSessionId', session.id)
+    navigate(`/workout/${session.id}`)
   }
 
   const doneDayIds = weekSessions.map((s) => s.program_day_id)
@@ -201,21 +247,30 @@ export default function WorkoutPicker() {
             {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((letter, i) => {
               const sess = weekdaySlots[i]
               const isToday = i === todayIdx
+              const isPastOrToday = i <= todayIdx
+              const slotDate = new Date(monday)
+              slotDate.setDate(monday.getDate() + i)
               return (
                 <div key={i} style={{ textAlign: 'center' }}>
                   <p style={{ fontFamily: 'var(--font-display)', fontSize: '10px', color: isToday ? 'var(--text)' : 'var(--text-3)', margin: '0 0 6px' }}>{letter}</p>
-                  <div style={{
-                    width: 38, height: 38, margin: '0 auto', borderRadius: '50%',
-                    background: sess ? 'var(--text)' : 'transparent',
-                    border: sess ? 'none' : isToday ? '1.5px solid var(--text)' : '1px solid var(--border)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  }}>
+                  <button
+                    onClick={() => isPastOrToday && setBackfillDate(slotDate)}
+                    aria-label={`Log workout for ${slotDate.toLocaleDateString('en-US', { weekday: 'long' })}`}
+                    style={{
+                      width: 38, height: 38, margin: '0 auto', borderRadius: '50%',
+                      background: sess ? 'var(--text)' : 'transparent',
+                      border: sess ? 'none' : isToday ? '1.5px solid var(--text)' : '1px solid var(--border)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      cursor: isPastOrToday ? 'pointer' : 'default', padding: 0,
+                    }}>
                     {sess ? (
                       <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', fontWeight: 600, color: 'var(--bg)' }}>{dayInitials(sess.day_name)}</span>
                     ) : isToday && hero ? (
                       <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', color: 'var(--text-2)' }}>{dayInitials(hero.name)}</span>
+                    ) : isPastOrToday ? (
+                      <span style={{ fontFamily: 'var(--font-display)', fontSize: '13px', color: 'var(--text-3)', fontWeight: 300 }}>+</span>
                     ) : null}
-                  </div>
+                  </button>
                 </div>
               )
             })}
@@ -302,6 +357,59 @@ export default function WorkoutPicker() {
             </button>
           </div>
         </>
+      )}
+
+      {/* Retro-log sheet */}
+      {backfillDate && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+          <div onClick={() => { setBackfillDate(null); setQuickName('') }} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.6)' }} />
+          <div style={{ position: 'relative', background: 'var(--surface)', borderRadius: '20px 20px 0 0', padding: '24px 20px', paddingBottom: 'max(32px, env(safe-area-inset-bottom, 32px))', zIndex: 1 }}>
+            <p style={{ fontFamily: 'var(--font-display)', fontSize: '11px', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-3)', margin: '0 0 16px' }}>
+              Log workout · <span style={{ color: 'var(--text-2)' }}>{backfillDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span>
+            </p>
+
+            {days.map((day) => (
+              <div key={day.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: '12px', padding: '12px 14px', marginBottom: '8px' }}>
+                <p style={{ flex: 1, fontFamily: 'var(--font-display)', fontSize: '14px', fontWeight: 600, color: 'var(--text)', margin: 0 }}>{day.name}</p>
+                <button
+                  onClick={() => backfillWithSets(day)}
+                  disabled={backfillSaving}
+                  style={{ background: 'none', border: '1px solid var(--border-2)', borderRadius: '8px', padding: '7px 12px', fontFamily: 'var(--font-display)', fontSize: '10px', letterSpacing: '0.1em', color: 'var(--text-2)', cursor: 'pointer' }}>
+                  LOG SETS
+                </button>
+                <button
+                  onClick={() => backfillMarkDone(day)}
+                  disabled={backfillSaving}
+                  style={{ background: 'var(--text)', border: 'none', borderRadius: '8px', padding: '8px 12px', fontFamily: 'var(--font-display)', fontSize: '10px', fontWeight: 600, letterSpacing: '0.1em', color: 'var(--bg)', cursor: 'pointer' }}>
+                  ✓ DONE
+                </button>
+              </div>
+            ))}
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', margin: '16px 0 12px' }}>
+              <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+              <span style={{ fontFamily: 'var(--font-display)', fontSize: '10px', letterSpacing: '0.14em', color: 'var(--text-3)' }}>OR QUICK LOG</span>
+              <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <input
+                type="text"
+                placeholder="Run, swim, pickup game…"
+                value={quickName}
+                onChange={(e) => setQuickName(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && backfillQuickLog()}
+                style={{ flex: 1, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: '10px', padding: '12px 14px', fontSize: '15px', color: 'var(--text)', outline: 'none', boxSizing: 'border-box', fontFamily: 'system-ui' }}
+              />
+              <button
+                onClick={backfillQuickLog}
+                disabled={backfillSaving || !quickName.trim()}
+                style={{ background: 'var(--text)', color: 'var(--bg)', border: 'none', borderRadius: '10px', padding: '0 18px', fontFamily: 'var(--font-display)', fontSize: '12px', fontWeight: 600, letterSpacing: '0.1em', cursor: 'pointer', opacity: !quickName.trim() || backfillSaving ? 0.4 : 1 }}>
+                SAVE
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

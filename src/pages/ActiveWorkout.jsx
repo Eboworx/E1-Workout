@@ -327,8 +327,11 @@ export default function ActiveWorkout() {
         }
       }
       if (allLogs.length > 0) await supabase.from('set_logs').insert(allLogs)
+      // Backdated sessions (retro-logged from the week strip) complete on their original day
+      const startedAt = session?.started_at ? new Date(session.started_at) : new Date()
+      const isBackdated = startedAt.toDateString() !== new Date().toDateString()
       await supabase.from('workout_sessions')
-        .update({ completed_at: new Date().toISOString() }).eq('id', sessionId)
+        .update({ completed_at: isBackdated ? session.started_at : new Date().toISOString() }).eq('id', sessionId)
       // Check which exercises hit all reps — show indicator, but do NOT auto-bump current_weight
       const progs = checkProgression(allLogs, exercises)
       localStorage.removeItem('activeSessionId')
@@ -427,6 +430,8 @@ export default function ActiveWorkout() {
 
   const { done, total } = totalProgress()
   const pct = total > 0 ? Math.round((done / total) * 100) : 0
+  const startedDate = session?.started_at ? new Date(session.started_at) : null
+  const isBackdated = startedDate && startedDate.toDateString() !== new Date().toDateString()
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--bg)' }}>
@@ -441,7 +446,9 @@ export default function ActiveWorkout() {
           </button>
           <div className="text-center">
             <h1 style={{ fontFamily: 'var(--font-display)', fontSize: '13px', fontWeight: 600, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--text)', margin: 0 }}>{session?.day_name}</h1>
-            <p style={{ fontFamily: 'var(--font-display)', fontSize: '11px', fontWeight: 300, color: 'var(--text-2)', fontVariantNumeric: 'tabular-nums', margin: '1px 0 0' }}>{formatTime(elapsed)}</p>
+            <p style={{ fontFamily: 'var(--font-display)', fontSize: '11px', fontWeight: 300, color: isBackdated ? 'var(--gold)' : 'var(--text-2)', fontVariantNumeric: 'tabular-nums', margin: '1px 0 0', letterSpacing: isBackdated ? '0.08em' : 'normal' }}>
+              {isBackdated ? `LOGGING FOR ${startedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase()}` : formatTime(elapsed)}
+            </p>
           </div>
           <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', color: 'var(--text-3)', fontVariantNumeric: 'tabular-nums', minWidth: 32, textAlign: 'right' }}>{done}/{total}</span>
         </div>
