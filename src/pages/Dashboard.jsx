@@ -60,20 +60,14 @@ export default function Dashboard() {
 
   const modules = [
     {
-      id: 'program',
-      label: 'Active Program',
+      id: 'training',
+      label: 'Training',
       sub: loading ? '—' : (activeProgram ? activeProgram.name : 'No active program'),
-      detail: loading ? '' : (recentSession
-        ? `Last: ${recentSession.day_name || recentSession.program_days?.name}`
-        : 'Start your first session'),
+      detail: loading ? '' : [
+        `${totalSessions} session${totalSessions !== 1 ? 's' : ''}`,
+        recentSession ? `last: ${recentSession.day_name || recentSession.program_days?.name}` : 'start your first session',
+      ].join(' · '),
       action: () => navigate('/workout-picker'),
-    },
-    {
-      id: 'progress',
-      label: 'Progress',
-      sub: loading ? '—' : `${totalSessions} session${totalSessions !== 1 ? 's' : ''} logged`,
-      detail: 'Analytics + progress photos',
-      action: () => navigate('/progress'),
     },
     {
       id: 'create',

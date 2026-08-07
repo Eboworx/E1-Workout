@@ -15,14 +15,26 @@ function getWeekBounds() {
   return { monday, sunday }
 }
 
+const OVERRIDE_KEY = (programId) => `e1_next_override_${programId}`
+
+// "Push Day A" → "PU"
+function dayInitials(name) {
+  const word = (name || '').trim().split(/\s+/)[0] || ''
+  return word.slice(0, 2).toUpperCase()
+}
+
 export default function WorkoutPicker() {
   const { user } = useAuth()
   const navigate = useNavigate()
   const [activeProgram, setActiveProgram] = useState(null)
   const [days, setDays] = useState([])
+  const [exCounts, setExCounts] = useState({})
   const [loading, setLoading] = useState(true)
   const [starting, setStarting] = useState(null)
-  const [weekSessions, setWeekSessions] = useState([]) // sessions completed this week
+  const [weekSessions, setWeekSessions] = useState([])
+  const [totalSessions, setTotalSessions] = useState(0)
+  const [lastSession, setLastSession] = useState(null)
+  const [overrideId, setOverrideId] = useState(null)
 
   useEffect(() => { loadData() }, [])
 
@@ -31,14 +43,27 @@ export default function WorkoutPicker() {
     const { data: program } = await supabase
       .from('programs').select('*').eq('user_id', user.id).eq('is_active', true).limit(1).single()
 
+    let programDays = []
     if (program) {
       setActiveProgram(program)
-      const { data: programDays } = await supabase
+      const { data } = await supabase
         .from('program_days').select('*').eq('program_id', program.id).order('day_order')
-      setDays(programDays || [])
+      programDays = data || []
+      setDays(programDays)
+
+      if (programDays.length) {
+        const { data: exs } = await supabase
+          .from('program_exercises').select('id, program_day_id')
+          .in('program_day_id', programDays.map((d) => d.id))
+        const counts = {}
+        for (const e of exs || []) counts[e.program_day_id] = (counts[e.program_day_id] || 0) + 1
+        setExCounts(counts)
+      }
+
+      const saved = localStorage.getItem(OVERRIDE_KEY(program.id))
+      if (saved) setOverrideId(saved)
     }
 
-    // Load this week's completed sessions
     const { monday, sunday } = getWeekBounds()
     const { data: sessions } = await supabase
       .from('workout_sessions')
@@ -48,6 +73,17 @@ export default function WorkoutPicker() {
       .gte('completed_at', monday.toISOString())
       .lte('completed_at', sunday.toISOString())
     setWeekSessions(sessions || [])
+
+    const { count } = await supabase
+      .from('workout_sessions').select('*', { count: 'exact', head: true })
+      .eq('user_id', user.id).not('completed_at', 'is', null)
+    setTotalSessions(count || 0)
+
+    const { data: last } = await supabase
+      .from('workout_sessions').select('day_name, completed_at')
+      .eq('user_id', user.id).not('completed_at', 'is', null)
+      .order('completed_at', { ascending: false }).limit(1).single()
+    setLastSession(last)
 
     setLoading(false)
   }
@@ -59,17 +95,25 @@ export default function WorkoutPicker() {
       .insert({ user_id: user.id, program_day_id: day.id, day_name: day.name })
       .select().single()
     if (error) { alert(error.message); setStarting(null); return }
+    // Starting the hero clears any swap override
+    if (activeProgram && overrideId === day.id) {
+      localStorage.removeItem(OVERRIDE_KEY(activeProgram.id))
+    }
     localStorage.setItem('activeSessionId', session.id)
     navigate(`/workout/${session.id}`)
   }
 
+  function makeNext(dayId) {
+    setOverrideId(dayId)
+    if (activeProgram) localStorage.setItem(OVERRIDE_KEY(activeProgram.id), dayId)
+  }
+
+  const doneDayIds = weekSessions.map((s) => s.program_day_id)
+
   function suggestedDayIndex() {
     if (!days.length) return 0
-    // Find the last completed day this week, suggest next
-    const doneDayIds = weekSessions.map((s) => s.program_day_id)
     const lastDoneIdx = days.reduce((last, d, i) => doneDayIds.includes(d.id) ? i : last, -1)
     if (lastDoneIdx === -1) return 0
-    // Find next undone day
     for (let i = lastDoneIdx + 1; i < days.length; i++) {
       if (!doneDayIds.includes(days[i].id)) return i
     }
@@ -82,38 +126,62 @@ export default function WorkoutPicker() {
     </div>
   )
 
-  const suggestedIdx = suggestedDayIndex()
-  const doneCount = weekSessions.length
-  const totalDays = days.length
+  // Hero: swap override wins if it's a valid, not-yet-done day
+  let heroIdx = suggestedDayIndex()
+  if (overrideId) {
+    const oIdx = days.findIndex((d) => d.id === overrideId)
+    if (oIdx !== -1 && !doneDayIds.includes(overrideId)) heroIdx = oIdx
+  }
+  const hero = days[heroIdx]
 
-  // Week label
+  const queueDays = days.filter((d, i) => i !== heroIdx && !doneDayIds.includes(d.id))
+  const doneDays = days.filter((d) => doneDayIds.includes(d.id))
+
   const { monday, sunday } = getWeekBounds()
-  const weekLabel = `${monday.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${sunday.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
+  const weekLabel = `${monday.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${sunday.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`.toUpperCase()
+  const todayIdx = (new Date().getDay() + 6) % 7
+
+  // Map each weekday (Mon..Sun) to a completed session, if any
+  const weekdaySlots = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(monday)
+    d.setDate(monday.getDate() + i)
+    const sess = weekSessions.find((s) => {
+      const c = new Date(s.completed_at)
+      return c.getFullYear() === d.getFullYear() && c.getMonth() === d.getMonth() && c.getDate() === d.getDate()
+    })
+    return sess || null
+  })
+
+  const doneCount = weekSessions.length
+
+  const rowStyle = {
+    display: 'flex', alignItems: 'center', gap: '12px',
+    background: 'var(--surface)', border: '1px solid var(--border)',
+    borderRadius: '14px', padding: '14px 16px', marginBottom: '8px',
+  }
 
   return (
-    <div style={{ background: 'var(--bg)', minHeight: '100%', padding: '20px 20px 40px', paddingTop: 'max(20px, env(safe-area-inset-top, 20px))' }}>
+    <div style={{ background: 'var(--bg)', minHeight: '100%', padding: '20px 18px 40px', paddingTop: 'max(20px, env(safe-area-inset-top, 20px))' }}>
 
-      {/* Back + header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px' }}>
-        <button onClick={() => navigate('/')} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px', color: 'var(--text-3)' }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', marginBottom: '18px' }}>
+        <button onClick={() => navigate('/')} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px', color: 'var(--text-3)', marginTop: 2 }}>
           <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
           </svg>
         </button>
-        <div>
-          <p style={{ fontFamily: "'Oxanium', sans-serif", fontSize: '10px', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-3)', margin: '0 0 2px' }}>Active Program</p>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <h2 style={{ fontFamily: "'Oxanium', sans-serif", fontSize: '20px', fontWeight: 400, color: 'var(--text)', margin: 0, letterSpacing: '0.02em' }}>
-              {activeProgram ? activeProgram.name : 'No program'}
-            </h2>
-            {activeProgram && (
-              <button onClick={() => navigate(`/programs/${activeProgram.id}/edit`)}
-                style={{ background: 'none', border: 'none', color: 'var(--text-3)', fontSize: '11px', fontFamily: "'Oxanium', sans-serif", letterSpacing: '0.1em', cursor: 'pointer', padding: 0 }}>
-                Edit
-              </button>
-            )}
-          </div>
+        <div style={{ flex: 1 }}>
+          <p style={{ fontFamily: 'var(--font-display)', fontSize: '10px', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-3)', margin: '0 0 2px' }}>Active Program</p>
+          <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '20px', fontWeight: 400, color: 'var(--text)', margin: 0, letterSpacing: '0.02em' }}>
+            {activeProgram ? activeProgram.name : 'No program'}
+          </h2>
         </div>
+        {activeProgram && (
+          <button onClick={() => navigate(`/programs/${activeProgram.id}/edit`)}
+            style={{ background: 'none', border: 'none', color: 'var(--text-3)', fontSize: '11px', fontFamily: 'var(--font-display)', letterSpacing: '0.1em', cursor: 'pointer', padding: '4px 0', textTransform: 'uppercase' }}>
+            Edit
+          </button>
+        )}
       </div>
 
       {!activeProgram ? (
@@ -121,87 +189,117 @@ export default function WorkoutPicker() {
           <p style={{ color: 'var(--text-2)', marginBottom: '16px' }}>No active program.</p>
           <button
             onClick={() => navigate('/programs/new')}
-            style={{ background: 'var(--text)', color: 'var(--bg)', border: 'none', borderRadius: '10px', padding: '12px 24px', fontFamily: "'Oxanium', sans-serif", fontSize: '14px', cursor: 'pointer' }}
+            style={{ background: 'var(--text)', color: 'var(--bg)', border: 'none', borderRadius: '10px', padding: '12px 24px', fontFamily: 'var(--font-display)', fontSize: '14px', cursor: 'pointer' }}
           >
             Create a program
           </button>
         </div>
       ) : (
         <>
-          {/* Week progress */}
-          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '12px', padding: '12px 16px', marginBottom: '20px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-              <p style={{ fontFamily: "'Oxanium', sans-serif", fontSize: '10px', letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--text-3)', margin: 0 }}>
-                This week
-              </p>
-              <p style={{ fontFamily: "'Oxanium', sans-serif", fontSize: '10px', color: 'var(--text-3)', margin: 0 }}>{weekLabel}</p>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <div style={{ flex: 1, height: 4, background: 'var(--border)', borderRadius: '2px', overflow: 'hidden' }}>
-                <div style={{ height: '100%', background: 'var(--text)', borderRadius: '2px', width: `${totalDays > 0 ? (doneCount / totalDays) * 100 : 0}%`, transition: 'width 0.3s' }} />
-              </div>
-              <p style={{ fontFamily: "'Oxanium', sans-serif", fontSize: '12px', color: 'var(--text-2)', margin: 0, flexShrink: 0 }}>
-                {doneCount}/{totalDays}
-              </p>
-            </div>
+          {/* Week strip */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '6px', marginBottom: '6px' }}>
+            {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((letter, i) => {
+              const sess = weekdaySlots[i]
+              const isToday = i === todayIdx
+              return (
+                <div key={i} style={{ textAlign: 'center' }}>
+                  <p style={{ fontFamily: 'var(--font-display)', fontSize: '10px', color: isToday ? 'var(--text)' : 'var(--text-3)', margin: '0 0 6px' }}>{letter}</p>
+                  <div style={{
+                    width: 38, height: 38, margin: '0 auto', borderRadius: '50%',
+                    background: sess ? 'var(--text)' : 'transparent',
+                    border: sess ? 'none' : isToday ? '1.5px solid var(--text)' : '1px solid var(--border)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    {sess ? (
+                      <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', fontWeight: 600, color: 'var(--bg)' }}>{dayInitials(sess.day_name)}</span>
+                    ) : isToday && hero ? (
+                      <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', color: 'var(--text-2)' }}>{dayInitials(hero.name)}</span>
+                    ) : null}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '18px', padding: '0 2px' }}>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: '10px', color: 'var(--text-3)' }}>{weekLabel}</span>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: '10px', color: 'var(--text-3)' }}>{doneCount}/{days.length} DONE</span>
           </div>
 
-          <p style={{ fontFamily: "'Oxanium', sans-serif", fontSize: '10px', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '12px' }}>
-            Pick a day
-          </p>
+          {/* Up next hero */}
+          {hero && (
+            <div style={{ background: 'var(--surface)', border: '1px solid var(--border-2)', borderRadius: '18px', padding: '18px 18px 16px', marginBottom: '16px' }}>
+              <p style={{ fontFamily: 'var(--font-display)', fontSize: '10px', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-2)', margin: '0 0 6px' }}>Up next</p>
+              <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '24px', fontWeight: 600, color: 'var(--text)', margin: 0 }}>{hero.name}</h3>
+              <p style={{ fontSize: '12px', color: 'var(--text-3)', margin: '3px 0 0' }}>
+                {exCounts[hero.id] || 0} exercise{(exCounts[hero.id] || 0) !== 1 ? 's' : ''} · day {hero.day_order} of {days.length}
+              </p>
+              <button
+                onClick={() => startWorkout(hero)}
+                disabled={!!starting}
+                style={{ width: '100%', marginTop: '16px', background: 'var(--text)', color: 'var(--bg)', border: 'none', borderRadius: '12px', padding: '15px', fontFamily: 'var(--font-display)', fontSize: '13px', fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', cursor: 'pointer', opacity: starting ? 0.5 : 1 }}
+              >
+                {starting === hero.id ? 'Starting…' : 'Start Workout'}
+              </button>
+            </div>
+          )}
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {days.map((day, idx) => {
-              const isSuggested = idx === suggestedIdx
-              const weekSession = weekSessions.find((s) => s.program_day_id === day.id)
-              const isDoneThisWeek = !!weekSession
-              const doneDate = weekSession?.completed_at
-                ? new Date(weekSession.completed_at).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
-                : null
-
-              return (
-                <button
-                  key={day.id}
-                  onClick={() => startWorkout(day)}
-                  disabled={!!starting}
-                  style={{
-                    width: '100%', textAlign: 'left',
-                    background: isDoneThisWeek ? 'var(--surface)' : isSuggested ? 'var(--surface-3)' : 'var(--surface-2)',
-                    border: `1px solid ${isDoneThisWeek ? 'var(--border)' : isSuggested ? 'var(--border-2)' : 'var(--border)'}`,
-                    borderRadius: '14px',
-                    padding: '14px 18px',
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    cursor: 'pointer',
-                    opacity: starting && starting !== day.id ? 0.4 : 1,
-                  }}
-                >
-                  <div>
-                    {isSuggested && !isDoneThisWeek && (
-                      <p style={{ fontFamily: "'Oxanium', sans-serif", fontSize: '10px', letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--text-2)', margin: '0 0 4px' }}>
-                        Up next
-                      </p>
-                    )}
-                    <p style={{ fontSize: '17px', fontWeight: isDoneThisWeek ? 400 : 600, color: isDoneThisWeek ? 'var(--text-2)' : 'var(--text)', margin: '0 0 2px' }}>
-                      {day.name}
-                    </p>
-                    <p style={{ fontSize: '12px', color: 'var(--text-3)', margin: 0 }}>
-                      {isDoneThisWeek ? `Done · ${doneDate}` : `Day ${day.day_order}`}
+          {/* Queue — swap into the up-next slot */}
+          {queueDays.length > 0 && (
+            <>
+              <p style={{ fontFamily: 'var(--font-display)', fontSize: '10px', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-3)', margin: '0 0 10px' }}>Rest of the week</p>
+              {queueDays.map((day) => (
+                <div key={day.id} onClick={() => startWorkout(day)} style={{ ...rowStyle, cursor: 'pointer', opacity: starting && starting !== day.id ? 0.4 : 1 }}>
+                  <div style={{ flex: 1 }}>
+                    <p style={{ fontFamily: 'var(--font-display)', fontSize: '15px', fontWeight: 600, color: 'var(--text)', margin: 0 }}>{day.name}</p>
+                    <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: '2px 0 0' }}>
+                      {exCounts[day.id] || 0} exercise{(exCounts[day.id] || 0) !== 1 ? 's' : ''} · day {day.day_order} of {days.length}
                     </p>
                   </div>
                   {starting === day.id ? (
-                    <div style={{ width: 20, height: 20, borderRadius: '50%', border: '2px solid var(--text-2)', borderTopColor: 'transparent', animation: 'spin 0.7s linear infinite' }} />
-                  ) : isDoneThisWeek ? (
-                    <svg width="18" height="18" fill="none" stroke="var(--text-2)" strokeWidth="2" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
+                    <div style={{ width: 18, height: 18, borderRadius: '50%', border: '2px solid var(--text-2)', borderTopColor: 'transparent', animation: 'spin 0.7s linear infinite' }} />
                   ) : (
-                    <svg width="18" height="18" fill="none" stroke="var(--text-3)" strokeWidth="1.8" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                    </svg>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); makeNext(day.id) }}
+                      aria-label="Do this next"
+                      style={{ background: 'none', border: '1px solid var(--border)', borderRadius: '8px', width: 30, height: 30, color: 'var(--text-2)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, flexShrink: 0 }}
+                    >
+                      <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" d="M7 16V4m0 0L3 8m4-4l4 4m6 4v12m0 0l4-4m-4 4l-4-4" />
+                      </svg>
+                    </button>
                   )}
-                </button>
-              )
-            })}
+                </div>
+              ))}
+            </>
+          )}
+
+          {/* Done this week */}
+          {doneDays.map((day) => {
+            const sess = weekSessions.find((s) => s.program_day_id === day.id)
+            const doneDate = sess?.completed_at
+              ? new Date(sess.completed_at).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+              : null
+            return (
+              <div key={day.id} onClick={() => startWorkout(day)} style={{ ...rowStyle, opacity: 0.55, cursor: 'pointer' }}>
+                <div style={{ flex: 1 }}>
+                  <p style={{ fontFamily: 'var(--font-display)', fontSize: '15px', fontWeight: 400, color: 'var(--text-2)', margin: 0 }}>{day.name}</p>
+                  <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: '2px 0 0' }}>Done{doneDate ? ` · ${doneDate}` : ''}</p>
+                </div>
+                <svg width="16" height="16" fill="none" stroke="var(--text-2)" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+            )
+          })}
+
+          {/* Progress footer */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: '1px solid var(--surface-2)', paddingTop: '14px', marginTop: '10px' }}>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', color: 'var(--text-3)', textTransform: 'uppercase' }}>
+              {totalSessions} sessions{lastSession ? ` · last: ${new Date(lastSession.completed_at).toLocaleDateString('en-US', { weekday: 'short' })} ${dayInitials(lastSession.day_name)}` : ''}
+            </span>
+            <button onClick={() => navigate('/progress')} style={{ background: 'none', border: 'none', fontFamily: 'var(--font-display)', fontSize: '11px', letterSpacing: '0.08em', color: 'var(--text-2)', cursor: 'pointer', padding: 0, textTransform: 'uppercase' }}>
+              Full Progress →
+            </button>
           </div>
         </>
       )}
