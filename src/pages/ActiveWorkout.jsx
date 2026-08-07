@@ -10,8 +10,10 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { supabase } from '../lib/supabase'
 import { checkProgression } from '../lib/progression'
+import { AB_BANK } from '../lib/abBank'
 
 const PROGRESS_KEY = (id) => `workout_progress_${id}`
+const AB_KEY = (id) => `ab_warmup_${id}`
 
 export default function ActiveWorkout() {
   const { sessionId } = useParams()
@@ -32,6 +34,9 @@ export default function ActiveWorkout() {
   const [insertAfterIdx, setInsertAfterIdx] = useState(null)
   const [addExForm, setAddExForm] = useState({ name: '', sets: 3, rep_min: 8, rep_max: 12, weight: 0, unit: 'lbs', isSuperset: false })
   const [addingEx, setAddingEx] = useState(false)
+  const [abIdx, setAbIdx] = useState(null)
+  const [abDone, setAbDone] = useState(false)
+  const [abPickerOpen, setAbPickerOpen] = useState(false)
   const timerRef = useRef(null)
   const startRef = useRef(Date.now())
 
@@ -53,6 +58,10 @@ export default function ActiveWorkout() {
       localStorage.setItem(PROGRESS_KEY(sessionId), JSON.stringify(setLogs))
     }
   }, [setLogs, loading])
+
+  useEffect(() => {
+    if (!loading && abIdx !== null) localStorage.setItem(AB_KEY(sessionId), JSON.stringify({ idx: abIdx, done: abDone }))
+  }, [abIdx, abDone, loading])
 
   async function loadWorkout() {
     const { data: sess } = await supabase
@@ -76,6 +85,16 @@ export default function ActiveWorkout() {
       .neq('id', sessionId)
       .order('completed_at', { ascending: true })
     setSessionHistory(allPast || [])
+
+    // Ab warm-up: restore a mid-workout choice; otherwise the user picks
+    const savedAb = localStorage.getItem(AB_KEY(sessionId))
+    if (savedAb) {
+      try {
+        const a = JSON.parse(savedAb)
+        setAbIdx(a.idx ?? null)
+        setAbDone(!!a.done)
+      } catch { /* stay unpicked */ }
+    }
 
     // Load last session's per-set weights so pyramid sets carry over correctly.
     // Progression: if every set hit its target reps last session → add weight_increment.
@@ -306,6 +325,7 @@ export default function ActiveWorkout() {
     await supabase.from('workout_sessions').delete().eq('id', sessionId)
     localStorage.removeItem('activeSessionId')
     localStorage.removeItem(PROGRESS_KEY(sessionId))
+    localStorage.removeItem(AB_KEY(sessionId))
     navigate('/')
   }
 
@@ -331,11 +351,15 @@ export default function ActiveWorkout() {
       const startedAt = session?.started_at ? new Date(session.started_at) : new Date()
       const isBackdated = startedAt.toDateString() !== new Date().toDateString()
       await supabase.from('workout_sessions')
-        .update({ completed_at: isBackdated ? session.started_at : new Date().toISOString() }).eq('id', sessionId)
+        .update({
+          completed_at: isBackdated ? session.started_at : new Date().toISOString(),
+          notes: abDone && abIdx !== null ? `Abs: ${AB_BANK[abIdx].name}` : null,
+        }).eq('id', sessionId)
       // Check which exercises hit all reps — show indicator, but do NOT auto-bump current_weight
       const progs = checkProgression(allLogs, exercises)
       localStorage.removeItem('activeSessionId')
       localStorage.removeItem(PROGRESS_KEY(sessionId))
+      localStorage.removeItem(AB_KEY(sessionId))
       if (progs.length > 0) setProgressions(progs)
       else navigate('/')
     } catch (err) {
@@ -493,6 +517,42 @@ export default function ActiveWorkout() {
           </div>
         )}
 
+        {/* Ab warm-up */}
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '16px', padding: '14px 16px', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <p style={{ fontFamily: 'var(--font-display)', fontSize: '10px', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-3)', margin: '0 0 3px' }}>Ab warm-up</p>
+            {abIdx === null ? (
+              <button onClick={() => setAbPickerOpen(true)}
+                style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontFamily: 'var(--font-display)', fontSize: '15px', fontWeight: 600, color: 'var(--text)' }}>Pick one</span>
+                <svg width="12" height="12" fill="none" stroke="var(--text-2)" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+            ) : (
+              <>
+                <button onClick={() => setAbPickerOpen(true)}
+                  style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', margin: '0 0 4px' }}>
+                  <span style={{ fontFamily: 'var(--font-display)', fontSize: '15px', fontWeight: 600, color: abDone ? 'var(--text-2)' : 'var(--text)' }}>{AB_BANK[abIdx].name}</span>
+                  <svg width="12" height="12" fill="none" stroke="var(--text-3)" strokeWidth="2" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {AB_BANK[abIdx].moves.map((m) => `${m.name} ${m.dose}`).join(' · ')}
+                </p>
+              </>
+            )}
+          </div>
+          {abIdx !== null && (
+            <button onClick={() => setAbDone((v) => !v)} className={`chk-btn${abDone ? ' on' : ''}`} aria-label="Ab warm-up done">
+              <svg width="16" height="16" fill="none" stroke={abDone ? 'var(--bg)' : 'transparent'} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+              </svg>
+            </button>
+          )}
+        </div>
+
         {/* Sortable exercise list */}
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext items={exercises.map((e) => e.id)} strategy={verticalListSortingStrategy}>
@@ -540,6 +600,33 @@ export default function ActiveWorkout() {
           Abandon workout
         </button>
       </div>
+
+      {/* Ab warm-up picker */}
+      {abPickerOpen && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+          <div onClick={() => setAbPickerOpen(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.6)' }} />
+          <div style={{ position: 'relative', background: 'var(--surface)', borderRadius: '20px 20px 0 0', padding: '24px 20px', paddingBottom: 'max(32px, env(safe-area-inset-bottom, 32px))', zIndex: 1, maxHeight: '75vh', overflowY: 'auto' }}>
+            <p style={{ fontFamily: 'var(--font-display)', fontSize: '11px', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-3)', margin: '0 0 16px' }}>Pick your ab warm-up</p>
+            {AB_BANK.map((circuit, i) => (
+              <button
+                key={i}
+                onClick={() => { setAbIdx(i); setAbDone(false); setAbPickerOpen(false) }}
+                style={{
+                  width: '100%', textAlign: 'left',
+                  background: i === abIdx ? 'var(--surface-3)' : 'var(--surface-2)',
+                  border: `1px solid ${i === abIdx ? 'var(--border-2)' : 'var(--border)'}`,
+                  borderRadius: '12px', padding: '12px 14px', marginBottom: '8px', cursor: 'pointer',
+                }}
+              >
+                <p style={{ fontFamily: 'var(--font-display)', fontSize: '14px', fontWeight: 600, color: 'var(--text)', margin: '0 0 3px' }}>{circuit.name}</p>
+                <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: 0 }}>
+                  {circuit.moves.map((m) => `${m.name} ${m.dose}`).join(' · ')}
+                </p>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Add exercise modal */}
       {showAddEx && (
