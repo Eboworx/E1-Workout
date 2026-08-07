@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { mondayOf, plannedPerWeek, weekScores, perfectStreak, strengthTrends } from '../lib/goals'
 
 const DAY_LABELS = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su']
 
@@ -23,6 +24,7 @@ export default function Progress() {
   const navigate = useNavigate()
 
   const [stats, setStats] = useState({ total: 0, thisWeek: 0, thisMonth: 0 })
+  const [goals, setGoals] = useState(null)
   const [sessions, setSessions] = useState([])
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState(null)
@@ -58,6 +60,43 @@ export default function Progress() {
     setStats({ total: total || 0, thisWeek: thisWeek || 0, thisMonth: thisMonth || 0 })
     setSessions(allSessions || [])
     setLoading(false)
+    loadGoals()
+  }
+
+  async function loadGoals() {
+    // Sessions for the last 8 weeks (Mon-based)
+    const start8 = mondayOf(new Date())
+    start8.setDate(start8.getDate() - 7 * 7)
+
+    const [{ data: program }, { data: recentSessions }] = await Promise.all([
+      supabase.from('programs').select('id, week_schedule').eq('user_id', user.id).eq('is_active', true).limit(1).single(),
+      supabase.from('workout_sessions').select('id, completed_at')
+        .eq('user_id', user.id).not('completed_at', 'is', null)
+        .gte('completed_at', start8.toISOString()),
+    ])
+
+    const planned = plannedPerWeek(program?.week_schedule)
+    const scores = weekScores(recentSessions || [], planned)
+    const streak = perfectStreak(scores)
+
+    let strength = { ups: 0, total: 0, list: [] }
+    if (program && recentSessions?.length) {
+      const { data: pDays } = await supabase.from('program_days').select('id').eq('program_id', program.id)
+      if (pDays?.length) {
+        const { data: exs } = await supabase.from('program_exercises')
+          .select('id, name').in('program_day_id', pDays.map((d) => d.id)).order('exercise_order')
+        if (exs?.length) {
+          const { data: logs } = await supabase.from('set_logs')
+            .select('program_exercise_id, session_id, weight, actual_reps')
+            .in('session_id', recentSessions.map((s) => s.id))
+            .in('program_exercise_id', exs.map((e) => e.id))
+            .eq('completed', true)
+          strength = strengthTrends(exs, recentSessions, logs || [])
+        }
+      }
+    }
+
+    setGoals({ scores, streak, planned, strength })
   }
 
   async function loadCalSessions() {
@@ -163,6 +202,81 @@ export default function Progress() {
           </div>
         ))}
       </div>
+
+      {/* ── Goals ── */}
+      {goals && (
+        <div style={{ marginBottom: '28px' }}>
+          <p style={{ fontFamily: "'Oxanium', sans-serif", fontSize: '10px', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '10px' }}>Goals</p>
+
+          {/* Headline numbers */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '10px' }}>
+            {(() => {
+              const cur = goals.scores[goals.scores.length - 1]
+              const weekPct = Math.round(cur.score * 100)
+              const strPct = goals.strength.total > 0 ? Math.round((goals.strength.ups / goals.strength.total) * 100) : null
+              return (
+                <>
+                  <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '12px', padding: '14px 12px', textAlign: 'center' }}>
+                    <p style={{ fontFamily: "'Oxanium', sans-serif", fontSize: '26px', fontWeight: 400, color: 'var(--text)', margin: '0 0 4px', lineHeight: 1 }}>{weekPct}%</p>
+                    <p style={{ fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-3)', margin: 0 }}>Week · {cur.count}/{goals.planned}</p>
+                  </div>
+                  <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '12px', padding: '14px 12px', textAlign: 'center' }}>
+                    <p style={{ fontFamily: "'Oxanium', sans-serif", fontSize: '26px', fontWeight: 400, color: 'var(--text)', margin: '0 0 4px', lineHeight: 1 }}>{strPct === null ? '—' : `${strPct}%`}</p>
+                    <p style={{ fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-3)', margin: 0 }}>
+                      Strength{goals.strength.total > 0 ? ` · ${goals.strength.ups}/${goals.strength.total} up` : ''}
+                    </p>
+                  </div>
+                </>
+              )
+            })()}
+          </div>
+
+          {/* 8-week consistency bars */}
+          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '12px', padding: '14px 16px 12px', marginBottom: '10px' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: '6px', height: 44 }}>
+              {goals.scores.map((w, i) => (
+                <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', height: '100%' }}>
+                  <div style={{
+                    height: `${Math.max(w.score * 100, 6)}%`,
+                    borderRadius: '3px',
+                    background: w.score >= 1 ? 'var(--text)' : w.score > 0 ? 'var(--text-3)' : 'var(--surface-3)',
+                    border: w.current ? '1px solid var(--border-2)' : 'none',
+                  }} />
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '8px' }}>
+              <p style={{ fontFamily: "'Oxanium', sans-serif", fontSize: '10px', letterSpacing: '0.12em', color: 'var(--text-3)', margin: 0 }}>LAST 8 WEEKS</p>
+              {goals.streak > 0 && (
+                <p style={{ fontFamily: "'Oxanium', sans-serif", fontSize: '10px', letterSpacing: '0.12em', color: 'var(--text-2)', margin: 0 }}>
+                  {goals.streak} PERFECT WEEK{goals.streak !== 1 ? 'S' : ''}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Per-exercise trends */}
+          {goals.strength.list.length > 0 && (
+            <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '12px', overflow: 'hidden' }}>
+              {goals.strength.list.map((ex, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: i < goals.strength.list.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                  <p style={{ fontSize: '13px', color: ex.trend === null ? 'var(--text-3)' : 'var(--text)', margin: 0 }}>{ex.name}</p>
+                  {ex.trend === null ? (
+                    <span style={{ fontSize: '11px', color: 'var(--text-3)' }}>needs 2 sessions</span>
+                  ) : (
+                    <span style={{
+                      fontFamily: "'Oxanium', sans-serif", fontSize: '12px', fontWeight: 600,
+                      color: ex.trend === 'up' ? 'var(--text)' : ex.trend === 'flat' ? 'var(--text-3)' : 'var(--gold)',
+                    }}>
+                      {ex.trend === 'up' ? '↑' : ex.trend === 'flat' ? '→' : '↓'} {ex.latest.weight}×{ex.latest.reps}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Calendar ── */}
       <div style={{ marginBottom: '28px' }}>
