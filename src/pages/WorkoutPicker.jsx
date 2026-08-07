@@ -20,6 +20,9 @@ const OVERRIDE_KEY = (programId) => `e1_next_override_${programId}`
 // Mon-first planned week; overridden by programs.week_schedule when set
 const DEFAULT_SCHEDULE = ['Lower 1', 'Push', 'Run', 'Lower 2', 'Pull', 'Run', 'Recover']
 
+// This-week-only plan edits (resets next week; template untouched)
+const PLAN_KEY = (programId, mondayIso) => `e1_week_plan_${programId}_${mondayIso}`
+
 // Week-strip bubble labels:
 // "Lower 1" → L1 · "Push" → PS · "Pull" → PL · "Run" → RUN · "Recover" → REC
 // "Upper Body" → UB · fallback: first two letters
@@ -52,6 +55,9 @@ export default function WorkoutPicker() {
   const [backfillDate, setBackfillDate] = useState(null) // Date — day being retro-logged
   const [quickName, setQuickName] = useState('')
   const [backfillSaving, setBackfillSaving] = useState(false)
+  const [weekPlan, setWeekPlan] = useState(null) // this week's edited plan
+  const [planEditIdx, setPlanEditIdx] = useState(null) // weekday index being planned
+  const [planCustom, setPlanCustom] = useState('')
 
   useEffect(() => { loadData() }, [])
 
@@ -79,6 +85,12 @@ export default function WorkoutPicker() {
 
       const saved = localStorage.getItem(OVERRIDE_KEY(program.id))
       if (saved) setOverrideId(saved)
+
+      const mondayIso = getWeekBounds().monday.toISOString().slice(0, 10)
+      const savedPlan = localStorage.getItem(PLAN_KEY(program.id, mondayIso))
+      if (savedPlan) {
+        try { setWeekPlan(JSON.parse(savedPlan)) } catch { /* keep template */ }
+      }
     }
 
     const { monday, sunday } = getWeekBounds()
@@ -194,9 +206,22 @@ export default function WorkoutPicker() {
   }
   const hero = days[heroIdx]
 
-  const schedule = Array.isArray(activeProgram?.week_schedule) && activeProgram.week_schedule.length === 7
+  const templateSchedule = Array.isArray(activeProgram?.week_schedule) && activeProgram.week_schedule.length === 7
     ? activeProgram.week_schedule
     : DEFAULT_SCHEDULE
+  const schedule = Array.isArray(weekPlan) && weekPlan.length === 7 ? weekPlan : templateSchedule
+
+  function savePlan(i, label) {
+    const next = [...schedule]
+    next[i] = label
+    setWeekPlan(next)
+    if (activeProgram) {
+      const mondayIso = getWeekBounds().monday.toISOString().slice(0, 10)
+      localStorage.setItem(PLAN_KEY(activeProgram.id, mondayIso), JSON.stringify(next))
+    }
+    setPlanEditIdx(null)
+    setPlanCustom('')
+  }
 
   const queueDays = days.filter((d, i) => i !== heroIdx && !doneDayIds.includes(d.id))
   const doneDays = days.filter((d) => doneDayIds.includes(d.id))
@@ -274,22 +299,27 @@ export default function WorkoutPicker() {
                   <p style={{ fontFamily: 'var(--font-display)', fontSize: '10px', color: isToday ? 'var(--text)' : 'var(--text-3)', margin: '0 0 6px' }}>{letter}</p>
                   <button
                     onClick={() => {
-                      if (!isPastOrToday) return
-                      // Prefill quick log if the planned activity isn't a program day
-                      if (planned && !days.some((d) => d.name.toLowerCase() === planned.toLowerCase())) {
-                        setQuickName(planned)
+                      if (isPastOrToday) {
+                        // Prefill quick log if the planned activity isn't a program day
+                        if (planned && !days.some((d) => d.name.toLowerCase() === planned.toLowerCase())) {
+                          setQuickName(planned)
+                        } else {
+                          setQuickName('')
+                        }
+                        setBackfillDate(slotDate)
                       } else {
-                        setQuickName('')
+                        setPlanEditIdx(i)
                       }
-                      setBackfillDate(slotDate)
                     }}
-                    aria-label={`Log workout for ${slotDate.toLocaleDateString('en-US', { weekday: 'long' })}`}
+                    aria-label={isPastOrToday
+                      ? `Log workout for ${slotDate.toLocaleDateString('en-US', { weekday: 'long' })}`
+                      : `Change plan for ${slotDate.toLocaleDateString('en-US', { weekday: 'long' })}`}
                     style={{
                       width: 38, height: 38, margin: '0 auto', borderRadius: '50%',
                       background: sess ? 'var(--text)' : 'transparent',
                       border: sess ? 'none' : isToday ? '1.5px solid var(--text)' : '1px solid var(--border)',
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      cursor: isPastOrToday ? 'pointer' : 'default', padding: 0,
+                      cursor: 'pointer', padding: 0,
                     }}>
                     {sess ? (
                       <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', fontWeight: 600, color: 'var(--bg)' }}>{dayInitials(sess.day_name)}</span>
@@ -386,6 +416,57 @@ export default function WorkoutPicker() {
           </div>
         </>
       )}
+
+      {/* Plan-a-day sheet */}
+      {planEditIdx !== null && (() => {
+        const planDate = new Date(monday)
+        planDate.setDate(monday.getDate() + planEditIdx)
+        const extras = ['Run', 'Recover'].filter((x) => !days.some((d) => d.name.toLowerCase() === x.toLowerCase()))
+        const options = [...days.map((d) => d.name), ...extras]
+        return (
+          <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+            <div onClick={() => { setPlanEditIdx(null); setPlanCustom('') }} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.6)' }} />
+            <div style={{ position: 'relative', background: 'var(--surface)', borderRadius: '20px 20px 0 0', padding: '24px 20px', paddingBottom: 'max(32px, env(safe-area-inset-bottom, 32px))', zIndex: 1 }}>
+              <p style={{ fontFamily: 'var(--font-display)', fontSize: '11px', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-3)', margin: '0 0 4px' }}>
+                Plan for <span style={{ color: 'var(--text-2)' }}>{planDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span>
+              </p>
+              <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: '0 0 16px' }}>This week only — your usual schedule isn't changed.</p>
+
+              {options.map((label) => (
+                <button
+                  key={label}
+                  onClick={() => savePlan(planEditIdx, label)}
+                  style={{
+                    width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    background: schedule[planEditIdx] === label ? 'var(--surface-3)' : 'var(--surface-2)',
+                    border: `1px solid ${schedule[planEditIdx] === label ? 'var(--border-2)' : 'var(--border)'}`,
+                    borderRadius: '12px', padding: '12px 14px', marginBottom: '8px', cursor: 'pointer',
+                  }}>
+                  <span style={{ fontFamily: 'var(--font-display)', fontSize: '14px', fontWeight: 600, color: 'var(--text)' }}>{label}</span>
+                  <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', color: 'var(--text-3)' }}>{dayInitials(label)}</span>
+                </button>
+              ))}
+
+              <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                <input
+                  type="text"
+                  placeholder="Something else…"
+                  value={planCustom}
+                  onChange={(e) => setPlanCustom(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && planCustom.trim() && savePlan(planEditIdx, planCustom.trim())}
+                  style={{ flex: 1, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: '10px', padding: '12px 14px', fontSize: '15px', color: 'var(--text)', outline: 'none', boxSizing: 'border-box', fontFamily: 'system-ui' }}
+                />
+                <button
+                  onClick={() => planCustom.trim() && savePlan(planEditIdx, planCustom.trim())}
+                  disabled={!planCustom.trim()}
+                  style={{ background: 'var(--text)', color: 'var(--bg)', border: 'none', borderRadius: '10px', padding: '0 18px', fontFamily: 'var(--font-display)', fontSize: '12px', fontWeight: 600, letterSpacing: '0.1em', cursor: 'pointer', opacity: planCustom.trim() ? 1 : 0.4 }}>
+                  SET
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Retro-log sheet */}
       {backfillDate && (
