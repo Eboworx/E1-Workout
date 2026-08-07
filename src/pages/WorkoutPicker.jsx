@@ -24,6 +24,13 @@ const DEFAULT_SCHEDULE = ['Lower 1', 'Push', 'Run', 'Lower 2', 'Pull', 'Run', 'R
 const PLAN_KEY = (programId, mondayIso) => `e1_week_plan_${programId}_${mondayIso}`
 
 // Week-strip bubble labels:
+function mondayOfDate(date) {
+  const d = new Date(date)
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7))
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
 // "Lower 1" → L1 · "Push" → PS · "Pull" → PL · "Run" → RUN · "Recover" → REC
 // "Upper Body" → UB · fallback: first two letters
 function dayInitials(name) {
@@ -56,8 +63,23 @@ export default function WorkoutPicker() {
   const [quickName, setQuickName] = useState('')
   const [backfillSaving, setBackfillSaving] = useState(false)
   const [weekPlan, setWeekPlan] = useState(null) // this week's edited plan
-  const [planEditIdx, setPlanEditIdx] = useState(null) // weekday index being planned
+  const [planEdit, setPlanEdit] = useState(null) // { monday: Date, idx } being planned
   const [planCustom, setPlanCustom] = useState('')
+  const [calOpen, setCalOpen] = useState(false)
+  const [calMonth, setCalMonth] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1) })
+  const [calSessions, setCalSessions] = useState([])
+
+  useEffect(() => { if (calOpen) loadCalMonth() }, [calOpen, calMonth])
+
+  async function loadCalMonth() {
+    const start = new Date(calMonth.getFullYear(), calMonth.getMonth(), 1)
+    const end = new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 0, 23, 59, 59, 999)
+    const { data } = await supabase
+      .from('workout_sessions').select('id, completed_at, day_name')
+      .eq('user_id', user.id).not('completed_at', 'is', null)
+      .gte('completed_at', start.toISOString()).lte('completed_at', end.toISOString())
+    setCalSessions(data || [])
+  }
 
   useEffect(() => { loadData() }, [])
 
@@ -155,6 +177,7 @@ export default function WorkoutPicker() {
     setBackfillDate(null)
     setQuickName('')
     loadData()
+    if (calOpen) loadCalMonth()
   }
 
   async function backfillMarkDone(day) {
@@ -166,6 +189,7 @@ export default function WorkoutPicker() {
     if (error) { alert(error.message); return }
     setBackfillDate(null)
     loadData()
+    if (calOpen) loadCalMonth()
   }
 
   async function backfillWithSets(day) {
@@ -211,15 +235,26 @@ export default function WorkoutPicker() {
     : DEFAULT_SCHEDULE
   const schedule = Array.isArray(weekPlan) && weekPlan.length === 7 ? weekPlan : templateSchedule
 
-  function savePlan(i, label) {
-    const next = [...schedule]
-    next[i] = label
-    setWeekPlan(next)
+  function getPlanForWeek(mon) {
     if (activeProgram) {
-      const mondayIso = getWeekBounds().monday.toISOString().slice(0, 10)
-      localStorage.setItem(PLAN_KEY(activeProgram.id, mondayIso), JSON.stringify(next))
+      const saved = localStorage.getItem(PLAN_KEY(activeProgram.id, mon.toISOString().slice(0, 10)))
+      if (saved) {
+        try {
+          const p = JSON.parse(saved)
+          if (Array.isArray(p) && p.length === 7) return p
+        } catch { /* fall through */ }
+      }
     }
-    setPlanEditIdx(null)
+    return templateSchedule
+  }
+
+  function savePlan(mon, i, label) {
+    const monIso = mon.toISOString().slice(0, 10)
+    const next = [...getPlanForWeek(mon)]
+    next[i] = label
+    if (activeProgram) localStorage.setItem(PLAN_KEY(activeProgram.id, monIso), JSON.stringify(next))
+    if (monIso === getWeekBounds().monday.toISOString().slice(0, 10)) setWeekPlan(next)
+    setPlanEdit(null)
     setPlanCustom('')
   }
 
@@ -266,10 +301,19 @@ export default function WorkoutPicker() {
           </h2>
         </div>
         {activeProgram && (
-          <button onClick={() => navigate(`/programs/${activeProgram.id}/edit`)}
-            style={{ background: 'none', border: 'none', color: 'var(--text-3)', fontSize: '11px', fontFamily: 'var(--font-display)', letterSpacing: '0.1em', cursor: 'pointer', padding: '4px 0', textTransform: 'uppercase' }}>
-            Edit
-          </button>
+          <>
+            <button onClick={() => setCalOpen(true)} aria-label="Month calendar"
+              style={{ background: 'none', border: 'none', color: 'var(--text-3)', cursor: 'pointer', padding: '4px 6px' }}>
+              <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+                <rect x="3" y="5" width="18" height="16" rx="2" />
+                <path strokeLinecap="round" d="M8 3v4m8-4v4M3 10h18" />
+              </svg>
+            </button>
+            <button onClick={() => navigate(`/programs/${activeProgram.id}/edit`)}
+              style={{ background: 'none', border: 'none', color: 'var(--text-3)', fontSize: '11px', fontFamily: 'var(--font-display)', letterSpacing: '0.1em', cursor: 'pointer', padding: '4px 0', textTransform: 'uppercase' }}>
+              Edit
+            </button>
+          </>
         )}
       </div>
 
@@ -308,7 +352,7 @@ export default function WorkoutPicker() {
                         }
                         setBackfillDate(slotDate)
                       } else {
-                        setPlanEditIdx(i)
+                        setPlanEdit({ monday: new Date(monday), idx: i })
                       }
                     }}
                     aria-label={isPastOrToday
@@ -417,29 +461,120 @@ export default function WorkoutPicker() {
         </>
       )}
 
+      {/* Month calendar modal */}
+      {calOpen && (() => {
+        const y = calMonth.getFullYear()
+        const m = calMonth.getMonth()
+        const firstDow = (new Date(y, m, 1).getDay() + 6) % 7
+        const daysInMonth = new Date(y, m + 1, 0).getDate()
+        const cells = Array(firstDow).fill(null)
+        for (let d = 1; d <= daysInMonth; d++) cells.push(d)
+        while (cells.length % 7 !== 0) cells.push(null)
+        const today = new Date(); today.setHours(0, 0, 0, 0)
+        const sessByDay = {}
+        for (const s of calSessions) {
+          const d = new Date(s.completed_at)
+          if (d.getMonth() === m && d.getFullYear() === y) sessByDay[d.getDate()] = s
+        }
+        return (
+          <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
+            <div onClick={() => setCalOpen(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.7)' }} />
+            <div style={{ position: 'relative', width: '100%', maxWidth: 360, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '20px', padding: '18px 16px', zIndex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+                <button onClick={() => setCalMonth(new Date(y, m - 1, 1))} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', padding: '4px 8px' }}>
+                  <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
+                </button>
+                <p style={{ fontFamily: 'var(--font-display)', fontSize: '13px', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text)', margin: 0 }}>
+                  {calMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+                </p>
+                <div style={{ display: 'flex', alignItems: 'center' }}>
+                  <button onClick={() => setCalMonth(new Date(y, m + 1, 1))} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', padding: '4px 8px' }}>
+                    <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+                  </button>
+                  <button onClick={() => setCalOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', padding: '4px 2px 4px 8px', fontSize: '15px' }}>✕</button>
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', marginBottom: '4px' }}>
+                {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => (
+                  <div key={i} style={{ textAlign: 'center', fontSize: '10px', fontFamily: 'var(--font-display)', color: 'var(--text-3)', padding: '2px 0' }}>{d}</div>
+                ))}
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '2px' }}>
+                {cells.map((d, ci) => {
+                  if (!d) return <div key={ci} style={{ height: 46 }} />
+                  const date = new Date(y, m, d)
+                  const sess = sessByDay[d]
+                  const isFutureDay = date > today
+                  const isTodayDay = date.getTime() === today.getTime()
+                  const wIdx = (date.getDay() + 6) % 7
+                  const planned = getPlanForWeek(mondayOfDate(date))[wIdx]
+                  return (
+                    <button
+                      key={ci}
+                      onClick={() => {
+                        if (isFutureDay) {
+                          setPlanEdit({ monday: mondayOfDate(date), idx: wIdx })
+                        } else {
+                          if (planned && !days.some((dd) => dd.name.toLowerCase() === planned.toLowerCase())) setQuickName(planned)
+                          else setQuickName('')
+                          setBackfillDate(date)
+                        }
+                      }}
+                      style={{
+                        height: 46, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1px',
+                        background: 'none', borderRadius: '10px', cursor: 'pointer', padding: 0,
+                        border: isTodayDay ? '1px solid var(--text)' : 'none',
+                      }}>
+                      {sess ? (
+                        <span style={{ width: 28, height: 28, borderRadius: '50%', background: 'var(--text)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-display)', fontSize: '9px', fontWeight: 600, color: 'var(--bg)' }}>
+                          {dayInitials(sess.day_name)}
+                        </span>
+                      ) : (
+                        <>
+                          <span style={{ fontSize: '12px', fontFamily: 'var(--font-display)', color: isFutureDay ? 'var(--text-2)' : 'var(--text-3)' }}>{d}</span>
+                          {planned && (
+                            <span style={{ fontSize: '8px', fontFamily: 'var(--font-display)', letterSpacing: '0.06em', color: 'var(--text-3)' }}>{dayInitials(planned)}</span>
+                          )}
+                        </>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+              <p style={{ fontSize: '10px', color: 'var(--text-3)', margin: '12px 2px 0', textAlign: 'center' }}>
+                Tap a past day to log · tap a future day to plan
+              </p>
+            </div>
+          </div>
+        )
+      })()}
+
       {/* Plan-a-day sheet */}
-      {planEditIdx !== null && (() => {
-        const planDate = new Date(monday)
-        planDate.setDate(monday.getDate() + planEditIdx)
+      {planEdit !== null && (() => {
+        const planDate = new Date(planEdit.monday)
+        planDate.setDate(planEdit.monday.getDate() + planEdit.idx)
+        const weekSched = getPlanForWeek(planEdit.monday)
         const extras = ['Run', 'Recover'].filter((x) => !days.some((d) => d.name.toLowerCase() === x.toLowerCase()))
         const options = [...days.map((d) => d.name), ...extras]
         return (
-          <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
-            <div onClick={() => { setPlanEditIdx(null); setPlanCustom('') }} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.6)' }} />
+          <div style={{ position: 'fixed', inset: 0, zIndex: 60, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+            <div onClick={() => { setPlanEdit(null); setPlanCustom('') }} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.6)' }} />
             <div style={{ position: 'relative', background: 'var(--surface)', borderRadius: '20px 20px 0 0', padding: '24px 20px', paddingBottom: 'max(32px, env(safe-area-inset-bottom, 32px))', zIndex: 1 }}>
               <p style={{ fontFamily: 'var(--font-display)', fontSize: '11px', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-3)', margin: '0 0 4px' }}>
                 Plan for <span style={{ color: 'var(--text-2)' }}>{planDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span>
               </p>
-              <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: '0 0 16px' }}>This week only — your usual schedule isn't changed.</p>
+              <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: '0 0 16px' }}>That week only — your usual schedule isn't changed.</p>
 
               {options.map((label) => (
                 <button
                   key={label}
-                  onClick={() => savePlan(planEditIdx, label)}
+                  onClick={() => savePlan(planEdit.monday, planEdit.idx, label)}
                   style={{
                     width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    background: schedule[planEditIdx] === label ? 'var(--surface-3)' : 'var(--surface-2)',
-                    border: `1px solid ${schedule[planEditIdx] === label ? 'var(--border-2)' : 'var(--border)'}`,
+                    background: weekSched[planEdit.idx] === label ? 'var(--surface-3)' : 'var(--surface-2)',
+                    border: `1px solid ${weekSched[planEdit.idx] === label ? 'var(--border-2)' : 'var(--border)'}`,
                     borderRadius: '12px', padding: '12px 14px', marginBottom: '8px', cursor: 'pointer',
                   }}>
                   <span style={{ fontFamily: 'var(--font-display)', fontSize: '14px', fontWeight: 600, color: 'var(--text)' }}>{label}</span>
@@ -453,11 +588,11 @@ export default function WorkoutPicker() {
                   placeholder="Something else…"
                   value={planCustom}
                   onChange={(e) => setPlanCustom(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && planCustom.trim() && savePlan(planEditIdx, planCustom.trim())}
+                  onKeyDown={(e) => e.key === 'Enter' && planCustom.trim() && savePlan(planEdit.monday, planEdit.idx, planCustom.trim())}
                   style={{ flex: 1, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: '10px', padding: '12px 14px', fontSize: '15px', color: 'var(--text)', outline: 'none', boxSizing: 'border-box', fontFamily: 'system-ui' }}
                 />
                 <button
-                  onClick={() => planCustom.trim() && savePlan(planEditIdx, planCustom.trim())}
+                  onClick={() => planCustom.trim() && savePlan(planEdit.monday, planEdit.idx, planCustom.trim())}
                   disabled={!planCustom.trim()}
                   style={{ background: 'var(--text)', color: 'var(--bg)', border: 'none', borderRadius: '10px', padding: '0 18px', fontFamily: 'var(--font-display)', fontSize: '12px', fontWeight: 600, letterSpacing: '0.1em', cursor: 'pointer', opacity: planCustom.trim() ? 1 : 0.4 }}>
                   SET
