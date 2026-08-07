@@ -17,10 +17,21 @@ function getWeekBounds() {
 
 const OVERRIDE_KEY = (programId) => `e1_next_override_${programId}`
 
-// "Push Day A" → "PU"
+// Week-strip bubble labels:
+// "Lower 1" → L1 · "Push" → PS · "Pull" → PL · "Run" → RUN · "Recover" → REC
+// "Upper Body" → UB · fallback: first two letters
 function dayInitials(name) {
-  const word = (name || '').trim().split(/\s+/)[0] || ''
-  return word.slice(0, 2).toUpperCase()
+  const n = (name || '').trim()
+  const lower = n.toLowerCase()
+  if (lower.startsWith('run')) return 'RUN'
+  if (lower.startsWith('rec')) return 'REC'
+  if (lower.startsWith('push')) return 'PS'
+  if (lower.startsWith('pull')) return 'PL'
+  const numbered = n.match(/^(\w)\w*\s+(\d+)$/) // "Lower 1" → L1
+  if (numbered) return (numbered[1] + numbered[2]).toUpperCase()
+  const words = n.split(/\s+/)
+  if (words.length > 1) return (words[0][0] + words[1][0]).toUpperCase()
+  return n.slice(0, 2).toUpperCase()
 }
 
 export default function WorkoutPicker() {
