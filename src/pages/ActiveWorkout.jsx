@@ -26,6 +26,7 @@ export default function ActiveWorkout() {
   const [elapsed, setElapsed] = useState(0)
   const [history, setHistory] = useState({})
   const [sessionHistory, setSessionHistory] = useState([])
+  const [readyToIncrease, setReadyToIncrease] = useState({}) // exerciseId → true if last session hit all targets
   const [showHistory, setShowHistory] = useState(false)
   const [showAddEx, setShowAddEx] = useState(false)
   const [insertAfterIdx, setInsertAfterIdx] = useState(null)
@@ -80,6 +81,7 @@ export default function ActiveWorkout() {
     // Progression: if every set hit its target reps last session → add weight_increment.
     // Otherwise carry exact weights forward. No current_weight arithmetic needed.
     const lastWeightsByExercise = {}
+    const readyMap = {}
     if (exs?.length && allPast?.length) {
       const lastSession = allPast[allPast.length - 1]
       const { data: lastLogs } = await supabase
@@ -97,11 +99,13 @@ export default function ActiveWorkout() {
           const allHitTarget = logs.every(
             (l) => l.actual_reps !== null && l.actual_reps >= (l.target_reps ?? ex.rep_max)
           )
-          const increment = allHitTarget ? parseFloat(ex.weight_increment || 0) : 0
-          lastWeightsByExercise[ex.id] = logs.map((l) => parseFloat(l.weight) + increment)
+          readyMap[ex.id] = allHitTarget
+          // Carry weights forward as-is; progression happens when user decides to bump
+          lastWeightsByExercise[ex.id] = logs.map((l) => parseFloat(l.weight))
         }
       }
     }
+    setReadyToIncrease(readyMap)
 
     const defaultLogs = {}
     for (const ex of exs || []) {
@@ -200,10 +204,14 @@ export default function ActiveWorkout() {
     }))
   }
 
-  function removeLastSet(exerciseId) {
+  function removeSet(exerciseId, setIdx) {
     setSetLogs((prev) => {
-      if (prev[exerciseId].length <= 1) return prev
-      return { ...prev, [exerciseId]: prev[exerciseId].slice(0, -1) }
+      const current = prev[exerciseId]
+      if (current.length <= 1) return prev
+      const updated = current
+        .filter((_, i) => i !== setIdx)
+        .map((s, i) => ({ ...s, set_number: i + 1 }))
+      return { ...prev, [exerciseId]: updated }
     })
   }
 
@@ -321,11 +329,8 @@ export default function ActiveWorkout() {
       if (allLogs.length > 0) await supabase.from('set_logs').insert(allLogs)
       await supabase.from('workout_sessions')
         .update({ completed_at: new Date().toISOString() }).eq('id', sessionId)
+      // Check which exercises hit all reps — show indicator, but do NOT auto-bump current_weight
       const progs = checkProgression(allLogs, exercises)
-      for (const p of progs) {
-        await supabase.from('program_exercises')
-          .update({ current_weight: p.newWeight }).eq('id', p.exerciseId)
-      }
       localStorage.removeItem('activeSessionId')
       localStorage.removeItem(PROGRESS_KEY(sessionId))
       if (progs.length > 0) setProgressions(progs)
@@ -372,15 +377,14 @@ export default function ActiveWorkout() {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center px-6 text-center" style={{ background: 'var(--bg)' }}>
         <h1 className="text-3xl font-bold mb-2" style={{ color: 'var(--text)' }}>Nice work.</h1>
-        <p className="text-sm mb-8" style={{ color: 'var(--text-2)' }}>Weights increased for next session:</p>
+        <p className="text-sm mb-8" style={{ color: 'var(--text-2)' }}>You hit all your reps — go up in weight next session:</p>
         <div className="w-full max-w-sm space-y-3 mb-10">
           {progressions.map((p) => (
             <div key={p.exerciseId} className="rounded-2xl px-5 py-4 text-left" style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
               <p className="font-semibold" style={{ color: 'var(--text)' }}>{p.exerciseName}</p>
               <p className="text-sm mt-1" style={{ color: 'var(--text-2)' }}>
-                {p.oldWeight} <span style={{ color: 'var(--text-3)' }}>→</span>{' '}
-                <span className="font-bold" style={{ color: 'var(--text)' }}>{p.newWeight} {p.unit}</span>
-                <span className="ml-2" style={{ color: 'var(--text-3)' }}>(+{p.newWeight - p.oldWeight})</span>
+                Ready to add <span className="font-bold" style={{ color: 'var(--text)' }}>+{p.increment} {p.unit}</span>
+                <span style={{ color: 'var(--text-3)' }}> next session</span>
               </p>
             </div>
           ))}
@@ -505,11 +509,12 @@ export default function ActiveWorkout() {
                     allDone={allDone}
                     exHistory={exHistory}
                     fmtDate={fmtDate}
+                    readyToIncrease={!!readyToIncrease[ex.id]}
                     onUpdateSet={(setIdx, field, value) => updateSet(ex.id, setIdx, field, value)}
                     onToggleComplete={(setIdx) => toggleComplete(ex.id, setIdx)}
                     onNavigate={() => navigate(`/exercise/${ex.id}`)}
                     onAddSet={() => addSet(ex.id)}
-                    onRemoveLastSet={() => removeLastSet(ex.id)}
+                    onRemoveSet={(setIdx) => removeSet(ex.id, setIdx)}
                     onSaveRepRange={(min, max) => saveRepRange(ex.id, min, max)}
                     onSetCount={(count) => setExerciseSetCount(ex.id, count)}
                   />
@@ -639,7 +644,7 @@ function SortableExerciseCard(props) {
 
 // ── Swipeable exercise card ──────────────────────────────────────────────────
 
-function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, onUpdateSet, onToggleComplete, onNavigate, onAddSet, onRemoveLastSet, onSaveRepRange, onSetCount, dragListeners, dragAttributes, isDragging }) {
+function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, onUpdateSet, onToggleComplete, onNavigate, onAddSet, onRemoveSet, onSaveRepRange, onSetCount, dragListeners, dragAttributes, isDragging }) {
   const scrollRef = useRef(null)
   const [onHistoryPanel, setOnHistoryPanel] = useState(false)
   const [editReps, setEditReps] = useState(false)
@@ -763,7 +768,14 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, onUpdateSet, onTo
             </div>
 
             <div style={{ flex: 1 }}>
-              <h3 style={{ fontSize: isSuperset ? '13px' : '15px', fontWeight: 600, color: isSuperset ? '#c8a84b' : 'var(--text)', margin: '0 0 4px' }}>{ex.name}</h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                <h3 style={{ fontSize: isSuperset ? '13px' : '15px', fontWeight: 600, color: isSuperset ? '#c8a84b' : 'var(--text)', margin: 0 }}>{ex.name}</h3>
+                {readyToIncrease && (
+                  <span style={{ fontSize: '9px', fontFamily: "'Oxanium', sans-serif", letterSpacing: '0.08em', textTransform: 'uppercase', background: 'rgba(200,168,75,0.15)', color: '#c8a84b', border: '1px solid rgba(200,168,75,0.3)', borderRadius: '4px', padding: '1px 5px', flexShrink: 0 }}>
+                    ⬆ add weight
+                  </span>
+                )}
+              </div>
               {editReps ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
                   <input type="number" value={editSets} onChange={(e) => setEditSets(e.target.value)} onFocus={(e) => e.target.select()}
@@ -801,15 +813,15 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, onUpdateSet, onTo
 
           {/* Set rows */}
           <div style={{ padding: isSuperset ? '0 14px 12px' : '0 16px 14px' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '20px 1fr 1fr 36px', gap: '4px', marginBottom: '4px', padding: '0 2px' }}>
-              {['SET', 'WEIGHT', 'REPS', ''].map((h, i) => (
+            <div style={{ display: 'grid', gridTemplateColumns: '20px 1fr 1fr 36px 20px', gap: '4px', marginBottom: '4px', padding: '0 2px' }}>
+              {['SET', 'WEIGHT', 'REPS', '', ''].map((h, i) => (
                 <span key={i} style={{ fontSize: '10px', color: 'var(--text-3)', textAlign: i === 0 ? 'left' : 'center', letterSpacing: '0.08em' }}>{h}</span>
               ))}
             </div>
 
             {sets.map((set, idx) => (
               <div key={idx} style={{
-                display: 'grid', gridTemplateColumns: '20px 1fr 1fr 36px',
+                display: 'grid', gridTemplateColumns: '20px 1fr 1fr 36px 20px',
                 gap: '4px', alignItems: 'center', marginBottom: isSuperset ? '4px' : '6px',
                 background: set.completed ? 'rgba(240,236,228,0.06)' : 'var(--surface-3)',
                 borderRadius: isSuperset ? '8px' : '10px', padding: isSuperset ? '4px 6px' : '6px 6px',
@@ -848,20 +860,20 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, onUpdateSet, onTo
                     </svg>
                   </button>
                 </div>
+                {/* Delete this set */}
+                {sets.length > 1 ? (
+                  <button
+                    onClick={() => onRemoveSet(idx)}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', fontSize: '13px', padding: '0', lineHeight: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.5 }}
+                  >×</button>
+                ) : <div />}
               </div>
             ))}
 
-            {/* Add / remove set */}
-            <div style={{ display: 'flex', gap: '6px', marginTop: '4px' }}>
-              <button onClick={onAddSet} style={{ flex: 1, background: 'none', border: '1px dashed var(--border)', borderRadius: '8px', padding: '7px', fontSize: '11px', color: 'var(--text-3)', cursor: 'pointer', letterSpacing: '0.1em', fontFamily: "'Oxanium', sans-serif" }}>
-                + ADD SET
-              </button>
-              {sets.length > 1 && (
-                <button onClick={onRemoveLastSet} style={{ background: 'none', border: '1px dashed var(--border)', borderRadius: '8px', padding: '7px 10px', fontSize: '11px', color: 'var(--text-3)', cursor: 'pointer' }}>
-                  −
-                </button>
-              )}
-            </div>
+            {/* Add set */}
+            <button onClick={onAddSet} style={{ width: '100%', marginTop: '4px', background: 'none', border: '1px dashed var(--border)', borderRadius: '8px', padding: '7px', fontSize: '11px', color: 'var(--text-3)', cursor: 'pointer', letterSpacing: '0.1em', fontFamily: "'Oxanium', sans-serif" }}>
+              + ADD SET
+            </button>
 
             {allDone && sets.every((s) => s.actual_reps >= ex.rep_max) && (
               <p style={{ fontSize: '11px', textAlign: 'center', color: 'var(--text-2)', marginTop: '8px' }}>

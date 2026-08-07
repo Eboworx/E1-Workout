@@ -27,12 +27,13 @@ export function checkProgression(completedSets, exercises) {
     const allHitMax = exerciseSets.every((s) => s.actual_reps >= exercise.rep_max)
 
     if (allHitMax) {
-      const newWeight = parseFloat(exercise.current_weight) + parseFloat(exercise.weight_increment)
+      const increment = parseFloat(exercise.weight_increment)
       progressions.push({
         exerciseId: exercise.id,
         exerciseName: exercise.name,
         oldWeight: parseFloat(exercise.current_weight),
-        newWeight,
+        newWeight: parseFloat(exercise.current_weight) + increment,
+        increment,
         unit: exercise.weight_unit,
       })
     }

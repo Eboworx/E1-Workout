@@ -3,16 +3,40 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 
+const DAY_LABELS = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su']
+
+function buildCalendarGrid(year, mon) {
+  const firstDow = new Date(year, mon, 1).getDay() // 0=Sun
+  const offset = (firstDow + 6) % 7 // Mon-first: Sun→6, Mon→0, ...
+  const daysInMonth = new Date(year, mon + 1, 0).getDate()
+  const cells = Array(offset).fill(null)
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d)
+  // pad to full weeks
+  while (cells.length % 7 !== 0) cells.push(null)
+  const weeks = []
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7))
+  return weeks
+}
+
 export default function Progress() {
   const { user } = useAuth()
   const navigate = useNavigate()
+
   const [stats, setStats] = useState({ total: 0, thisWeek: 0, thisMonth: 0 })
   const [sessions, setSessions] = useState([])
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState(null)
   const [sessionSets, setSessionSets] = useState({})
 
+  // Calendar state
+  const [calMonth, setCalMonth] = useState(() => {
+    const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1)
+  })
+  const [calSessions, setCalSessions] = useState([])
+  const [selectedDay, setSelectedDay] = useState(null)
+
   useEffect(() => { loadData() }, [])
+  useEffect(() => { loadCalSessions() }, [calMonth])
 
   async function loadData() {
     const now = new Date()
@@ -34,6 +58,23 @@ export default function Progress() {
     setStats({ total: total || 0, thisWeek: thisWeek || 0, thisMonth: thisMonth || 0 })
     setSessions(allSessions || [])
     setLoading(false)
+  }
+
+  async function loadCalSessions() {
+    const year = calMonth.getFullYear()
+    const mon = calMonth.getMonth()
+    const start = new Date(year, mon, 1).toISOString()
+    const end = new Date(year, mon + 1, 0, 23, 59, 59, 999).toISOString()
+
+    const { data } = await supabase
+      .from('workout_sessions')
+      .select('id, completed_at, day_name, started_at')
+      .eq('user_id', user.id)
+      .not('completed_at', 'is', null)
+      .gte('completed_at', start)
+      .lte('completed_at', end)
+    setCalSessions(data || [])
+    setSelectedDay(null)
   }
 
   async function loadSets(sessionId) {
@@ -63,11 +104,41 @@ export default function Progress() {
     return `${mins} min`
   }
 
+  // Calendar helpers
+  const calYear = calMonth.getFullYear()
+  const calMon = calMonth.getMonth()
+  const weeks = buildCalendarGrid(calYear, calMon)
+  const today = new Date()
+
+  const sessionsByDay = {}
+  for (const s of calSessions) {
+    const d = new Date(s.completed_at).getDate()
+    if (!sessionsByDay[d]) sessionsByDay[d] = []
+    sessionsByDay[d].push(s)
+  }
+
+  const selectedSessions = selectedDay ? (sessionsByDay[selectedDay] || []) : []
+
+  const monthLabel = calMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+
+  function prevMonth() {
+    setCalMonth(new Date(calYear, calMon - 1, 1))
+  }
+  function nextMonth() {
+    setCalMonth(new Date(calYear, calMon + 1, 1))
+  }
+  function isToday(d) {
+    return d === today.getDate() && calMon === today.getMonth() && calYear === today.getFullYear()
+  }
+  function isFuture(d) {
+    return new Date(calYear, calMon, d) > today
+  }
+
   return (
-    <div style={{ background: 'var(--bg)', minHeight: '100%', padding: '28px 20px 60px', paddingTop: 'max(28px, env(safe-area-inset-top, 28px))' }}>
+    <div style={{ background: 'var(--bg)', minHeight: '100%', padding: '28px 20px 80px', paddingTop: 'max(28px, env(safe-area-inset-top, 28px))' }}>
 
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '28px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '24px' }}>
         <button onClick={() => navigate('/')} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px', color: 'var(--text-3)', flexShrink: 0 }}>
           <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
@@ -80,7 +151,7 @@ export default function Progress() {
       </div>
 
       {/* Stats row */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px', marginBottom: '28px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px', marginBottom: '24px' }}>
         {[
           { label: 'Total', value: loading ? '—' : stats.total },
           { label: 'This month', value: loading ? '—' : stats.thisMonth },
@@ -93,25 +164,129 @@ export default function Progress() {
         ))}
       </div>
 
-      {/* Progress photos */}
-      <div style={{ marginBottom: '32px' }}>
-        <p style={{ fontFamily: "'Oxanium', sans-serif", fontSize: '10px', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '10px' }}>Progress Photos</p>
-        <div
-          style={{ background: 'var(--surface)', border: '1px dashed var(--border-2)', borderRadius: '14px', padding: '24px 20px', textAlign: 'center', cursor: 'pointer' }}
-          onClick={() => alert('Photo uploads coming soon')}
-        >
-          <div style={{ width: 36, height: 36, borderRadius: '50%', background: 'var(--surface-3)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 10px' }}>
-            <svg width="18" height="18" fill="none" stroke="var(--text-3)" strokeWidth="1.6" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+      {/* ── Calendar ── */}
+      <div style={{ marginBottom: '28px' }}>
+        {/* Month navigation */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+          <button onClick={prevMonth} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', padding: '4px 8px' }}>
+            <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
             </svg>
-          </div>
-          <p style={{ fontSize: '14px', color: 'var(--text-2)', margin: '0 0 2px' }}>Add a progress photo</p>
-          <p style={{ fontSize: '12px', color: 'var(--text-3)', margin: 0 }}>Track your physique over time</p>
+          </button>
+          <p style={{ fontFamily: "'Oxanium', sans-serif", fontSize: '13px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-2)', margin: 0 }}>
+            {monthLabel}
+          </p>
+          <button onClick={nextMonth} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', padding: '4px 8px' }}>
+            <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
         </div>
+
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '14px', overflow: 'hidden', padding: '12px 10px' }}>
+          {/* Day headers */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', marginBottom: '6px' }}>
+            {DAY_LABELS.map((d) => (
+              <div key={d} style={{ textAlign: 'center', fontSize: '10px', fontFamily: "'Oxanium', sans-serif", letterSpacing: '0.08em', color: 'var(--text-3)', padding: '4px 0' }}>
+                {d}
+              </div>
+            ))}
+          </div>
+
+          {/* Weeks */}
+          {weeks.map((week, wi) => (
+            <div key={wi} style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '2px', marginBottom: '2px' }}>
+              {week.map((day, di) => {
+                if (!day) return <div key={di} />
+                const hasSession = !!sessionsByDay[day]
+                const isSelected = selectedDay === day
+                const todayFlag = isToday(day)
+                const futureFlag = isFuture(day)
+
+                let bg = 'transparent'
+                let color = futureFlag ? 'var(--text-3)' : 'var(--text-2)'
+                let border = 'none'
+                let fontWeight = 400
+
+                if (hasSession && isSelected) {
+                  bg = 'var(--text)'; color = 'var(--bg)'; fontWeight = 600
+                } else if (hasSession) {
+                  bg = 'var(--surface-3)'; color = 'var(--text)'; fontWeight = 500
+                  border = '1px solid var(--border-2)'
+                } else if (todayFlag) {
+                  border = '1px solid var(--text-3)'
+                }
+
+                return (
+                  <button
+                    key={di}
+                    onClick={() => hasSession ? setSelectedDay(isSelected ? null : day) : null}
+                    style={{
+                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                      height: 38, borderRadius: '8px', cursor: hasSession ? 'pointer' : 'default',
+                      background: bg, border, position: 'relative',
+                    }}
+                  >
+                    <span style={{ fontSize: '13px', color, fontWeight, fontFamily: "'Oxanium', sans-serif" }}>
+                      {day}
+                    </span>
+                    {hasSession && !isSelected && (
+                      <div style={{ width: 4, height: 4, borderRadius: '50%', background: 'var(--text)', position: 'absolute', bottom: 4 }} />
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          ))}
+        </div>
+
+        {/* Selected day detail */}
+        {selectedDay && selectedSessions.length > 0 && (
+          <div style={{ marginTop: '10px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '12px', overflow: 'hidden' }}>
+            {selectedSessions.map((s, i) => (
+              <div key={s.id}>
+                {i > 0 && <div style={{ height: 1, background: 'var(--border)' }} />}
+                <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div>
+                    <p style={{ fontSize: '15px', color: 'var(--text)', margin: '0 0 2px', fontWeight: 500 }}>{s.day_name}</p>
+                    <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: 0 }}>
+                      {new Date(s.completed_at).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
+                      {s.started_at ? ` · ${durationStr(s.started_at, s.completed_at)}` : ''}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => loadSets(s.id)}
+                    style={{ background: 'none', border: 'none', color: 'var(--text-3)', fontSize: '11px', fontFamily: "'Oxanium', sans-serif", letterSpacing: '0.1em', cursor: 'pointer', padding: 0 }}
+                  >
+                    {expanded === s.id ? 'Hide' : 'Details'}
+                  </button>
+                </div>
+                {expanded === s.id && (sessionSets[s.id] || []).length > 0 && (
+                  <div style={{ borderTop: '1px solid var(--border)', padding: '10px 16px 14px' }}>
+                    {Object.entries(groupByExercise(sessionSets[s.id] || [])).map(([exName, exSets]) => (
+                      <div key={exName} style={{ marginBottom: '12px' }}>
+                        <p style={{ fontSize: '12px', color: 'var(--text)', margin: '0 0 4px', fontWeight: 500 }}>{exName}</p>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                          {exSets.map((s, i) => (
+                            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}>
+                              <span style={{ color: 'var(--text-3)', width: '18px' }}>#{s.set_number}</span>
+                              <span style={{ color: 'var(--text)' }}>{s.weight} {s.weight_unit}</span>
+                              <span style={{ color: 'var(--text-3)' }}>×</span>
+                              <span style={{ color: s.actual_reps >= s.target_reps ? 'var(--text)' : '#c8a84b' }}>{s.actual_reps} reps</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* History */}
+      {/* History list */}
       <div>
         <p style={{ fontFamily: "'Oxanium', sans-serif", fontSize: '10px', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '10px' }}>History</p>
 
