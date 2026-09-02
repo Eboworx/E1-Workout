@@ -70,6 +70,13 @@ export default function Dashboard() {
       action: () => navigate('/workout-picker'),
     },
     {
+      id: 'nudge',
+      label: 'Nudge',
+      sub: 'Posture & breathing',
+      detail: 'Timed reminders · sound & haptic',
+      action: () => navigate('/nudge'),
+    },
+    {
       id: 'create',
       label: 'Create Program',
       sub: 'Build a new program',
