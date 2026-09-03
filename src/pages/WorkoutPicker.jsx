@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
@@ -68,6 +68,14 @@ export default function WorkoutPicker() {
   const [calOpen, setCalOpen] = useState(false)
   const [calMonth, setCalMonth] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1) })
   const [calSessions, setCalSessions] = useState([])
+  const stripRef = useRef(null)
+
+  // Land the swipeable strip on the current week (index 8 of -8..+4)
+  useEffect(() => {
+    if (loading) return
+    const el = stripRef.current
+    if (el) el.scrollLeft = 8 * el.clientWidth
+  }, [loading])
 
   useEffect(() => { if (calOpen) loadCalMonth() }, [calOpen, calMonth])
 
@@ -135,14 +143,17 @@ export default function WorkoutPicker() {
       }
     }
 
+    // Load sessions for the strip's whole swipeable range (8 weeks back, 4 ahead)
     const { monday, sunday } = getWeekBounds()
+    const rangeStart = new Date(monday); rangeStart.setDate(rangeStart.getDate() - 8 * 7)
+    const rangeEnd = new Date(sunday); rangeEnd.setDate(rangeEnd.getDate() + 4 * 7)
     const { data: sessions } = await supabase
       .from('workout_sessions')
       .select('id, program_day_id, completed_at, day_name')
       .eq('user_id', user.id)
       .not('completed_at', 'is', null)
-      .gte('completed_at', monday.toISOString())
-      .lte('completed_at', sunday.toISOString())
+      .gte('completed_at', rangeStart.toISOString())
+      .lte('completed_at', rangeEnd.toISOString())
     setWeekSessions(sessions || [])
 
     const { count } = await supabase
@@ -224,7 +235,12 @@ export default function WorkoutPicker() {
     navigate(`/workout/${session.id}`)
   }
 
-  const doneDayIds = weekSessions.map((s) => s.program_day_id)
+  const curWeekSessions = weekSessions.filter((s) => {
+    const { monday: m, sunday: su } = getWeekBounds()
+    const c = new Date(s.completed_at)
+    return c >= m && c <= su
+  })
+  const doneDayIds = curWeekSessions.map((s) => s.program_day_id)
 
   function suggestedDayIndex() {
     if (!days.length) return 0
@@ -281,22 +297,9 @@ export default function WorkoutPicker() {
   const queueDays = days.filter((d, i) => i !== heroIdx && !doneDayIds.includes(d.id))
   const doneDays = days.filter((d) => doneDayIds.includes(d.id))
 
-  const { monday, sunday } = getWeekBounds()
-  const weekLabel = `${monday.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${sunday.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`.toUpperCase()
+  const { monday } = getWeekBounds()
   const todayIdx = (new Date().getDay() + 6) % 7
-
-  // Map each weekday (Mon..Sun) to a completed session, if any
-  const weekdaySlots = Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(monday)
-    d.setDate(monday.getDate() + i)
-    const sess = weekSessions.find((s) => {
-      const c = new Date(s.completed_at)
-      return c.getFullYear() === d.getFullYear() && c.getMonth() === d.getMonth() && c.getDate() === d.getDate()
-    })
-    return sess || null
-  })
-
-  const doneCount = weekSessions.length
+  const doneCount = curWeekSessions.length
 
   const rowStyle = {
     display: 'flex', alignItems: 'center', gap: '12px',
@@ -349,57 +352,85 @@ export default function WorkoutPicker() {
         </div>
       ) : (
         <>
-          {/* Week strip */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '6px', marginBottom: '6px' }}>
-            {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((letter, i) => {
-              const sess = weekdaySlots[i]
-              const isToday = i === todayIdx
-              const isPastOrToday = i <= todayIdx
-              const planned = schedule[i]
-              const slotDate = new Date(monday)
-              slotDate.setDate(monday.getDate() + i)
+          {/* Week strip — swipe left/right for past & upcoming weeks */}
+          <div
+            ref={stripRef}
+            style={{ display: 'flex', overflowX: 'auto', scrollSnapType: 'x mandatory', WebkitOverflowScrolling: 'touch', marginBottom: '18px' }}
+          >
+            {Array.from({ length: 13 }, (_, k) => k - 8).map((offset) => {
+              const mon = new Date(monday); mon.setDate(monday.getDate() + offset * 7)
+              const sun = new Date(mon); sun.setDate(mon.getDate() + 6); sun.setHours(23, 59, 59, 999)
+              const isCurWeek = offset === 0
+              const plan = isCurWeek ? schedule : getPlanForWeek(mon)
+              const wkSessions = weekSessions.filter((s) => {
+                const c = new Date(s.completed_at)
+                return c >= mon && c <= sun
+              })
+              const label = `${mon.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${sun.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`.toUpperCase()
+              const now = new Date(); now.setHours(23, 59, 59, 999)
+
               return (
-                <div key={i} style={{ textAlign: 'center' }}>
-                  <p style={{ fontFamily: 'var(--font-display)', fontSize: '10px', color: isToday ? 'var(--text)' : 'var(--text-3)', margin: '0 0 6px' }}>{letter}</p>
-                  <button
-                    onClick={() => {
-                      if (isPastOrToday) {
-                        // Prefill quick log if the planned activity isn't a program day
-                        if (planned && !days.some((d) => d.name.toLowerCase() === planned.toLowerCase())) {
-                          setQuickName(planned)
-                        } else {
-                          setQuickName('')
-                        }
-                        setBackfillDate(slotDate)
-                      } else {
-                        setPlanEdit({ monday: new Date(monday), idx: i })
-                      }
-                    }}
-                    aria-label={isPastOrToday
-                      ? `Log workout for ${slotDate.toLocaleDateString('en-US', { weekday: 'long' })}`
-                      : `Change plan for ${slotDate.toLocaleDateString('en-US', { weekday: 'long' })}`}
-                    style={{
-                      width: 38, height: 38, margin: '0 auto', borderRadius: '50%',
-                      background: sess ? 'var(--text)' : 'transparent',
-                      border: sess ? 'none' : isToday ? '1.5px solid var(--text)' : '1px solid var(--border)',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      cursor: 'pointer', padding: 0,
-                    }}>
-                    {sess ? (
-                      <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', fontWeight: 600, color: 'var(--bg)' }}>{dayInitials(sess.day_name)}</span>
-                    ) : planned ? (
-                      <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', color: isToday ? 'var(--text-2)' : 'var(--text-3)' }}>{dayInitials(planned)}</span>
-                    ) : isPastOrToday ? (
-                      <span style={{ fontFamily: 'var(--font-display)', fontSize: '13px', color: 'var(--text-3)', fontWeight: 300 }}>+</span>
-                    ) : null}
-                  </button>
+                <div key={offset} style={{ flex: '0 0 100%', minWidth: '100%', scrollSnapAlign: 'start' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '6px', marginBottom: '6px' }}>
+                    {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((letter, i) => {
+                      const slotDate = new Date(mon)
+                      slotDate.setDate(mon.getDate() + i)
+                      const sess = wkSessions.find((s) => {
+                        const c = new Date(s.completed_at)
+                        return c.getFullYear() === slotDate.getFullYear() && c.getMonth() === slotDate.getMonth() && c.getDate() === slotDate.getDate()
+                      })
+                      const isToday = isCurWeek && i === todayIdx
+                      const isPastOrToday = slotDate <= now
+                      const planned = plan[i]
+                      return (
+                        <div key={i} style={{ textAlign: 'center' }}>
+                          <p style={{ fontFamily: 'var(--font-display)', fontSize: '10px', color: isToday ? 'var(--text)' : 'var(--text-3)', margin: '0 0 6px' }}>{letter}</p>
+                          <button
+                            onClick={() => {
+                              if (isPastOrToday) {
+                                if (planned && !days.some((d) => d.name.toLowerCase() === planned.toLowerCase())) {
+                                  setQuickName(planned)
+                                } else {
+                                  setQuickName('')
+                                }
+                                setBackfillDate(slotDate)
+                              } else {
+                                setPlanEdit({ monday: new Date(mon), idx: i })
+                              }
+                            }}
+                            aria-label={isPastOrToday
+                              ? `Log workout for ${slotDate.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}`
+                              : `Change plan for ${slotDate.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}`}
+                            style={{
+                              width: 38, height: 38, margin: '0 auto', borderRadius: '50%',
+                              background: sess ? 'var(--text)' : 'transparent',
+                              border: sess ? 'none' : isToday ? '1.5px solid var(--text)' : '1px solid var(--border)',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              cursor: 'pointer', padding: 0,
+                            }}>
+                            {sess ? (
+                              <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', fontWeight: 600, color: 'var(--bg)' }}>{dayInitials(sess.day_name)}</span>
+                            ) : planned ? (
+                              <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', color: isToday ? 'var(--text-2)' : 'var(--text-3)' }}>{dayInitials(planned)}</span>
+                            ) : isPastOrToday ? (
+                              <span style={{ fontFamily: 'var(--font-display)', fontSize: '13px', color: 'var(--text-3)', fontWeight: 300 }}>+</span>
+                            ) : null}
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '0 2px' }}>
+                    <span style={{ fontFamily: 'var(--font-display)', fontSize: '10px', color: 'var(--text-3)' }}>
+                      {label}{isCurWeek ? '' : offset < 0 ? ` · ${-offset}W AGO` : ` · IN ${offset}W`}
+                    </span>
+                    <span style={{ fontFamily: 'var(--font-display)', fontSize: '10px', color: 'var(--text-3)' }}>
+                      {isCurWeek ? `${doneCount}/${days.length} DONE` : offset < 0 ? `${wkSessions.length} DONE` : ''}
+                    </span>
+                  </div>
                 </div>
               )
             })}
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '18px', padding: '0 2px' }}>
-            <span style={{ fontFamily: 'var(--font-display)', fontSize: '10px', color: 'var(--text-3)' }}>{weekLabel}</span>
-            <span style={{ fontFamily: 'var(--font-display)', fontSize: '10px', color: 'var(--text-3)' }}>{doneCount}/{days.length} DONE</span>
           </div>
 
           {/* Up next hero */}

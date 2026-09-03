@@ -93,41 +93,88 @@ export default function ProgramBuilder() {
     setSaving(true)
     try {
       let programId = id
+      let dbDayNames = {}
+      let weekSchedule = null
       if (id) {
         const { error: progErr } = await supabase.from('programs').update({ name, description, is_active: isActive }).eq('id', id)
         if (progErr) throw progErr
-        // Must delete exercises first (FK constraint), then days
-        const { data: existingDays } = await supabase.from('program_days').select('id').eq('program_id', id)
-        if (existingDays?.length) {
-          const { error: exErr } = await supabase.from('program_exercises').delete().in('program_day_id', existingDays.map((d) => d.id))
-          if (exErr) throw exErr
+
+        // Diff against what's in the DB — update in place so history stays linked
+        const { data: prog } = await supabase.from('programs').select('week_schedule').eq('id', id).single()
+        weekSchedule = Array.isArray(prog?.week_schedule) ? [...prog.week_schedule] : null
+        const { data: dbDays } = await supabase.from('program_days').select('id, name').eq('program_id', id)
+        for (const d of dbDays || []) dbDayNames[d.id] = d.name
+
+        // Delete only days the user removed in the editor
+        const keptDayIds = days.map((d) => d.id).filter(Boolean)
+        const removedDayIds = (dbDays || []).filter((d) => !keptDayIds.includes(d.id)).map((d) => d.id)
+        if (removedDayIds.length) {
+          await supabase.from('program_exercises').delete().in('program_day_id', removedDayIds)
+          const { error: dayErr } = await supabase.from('program_days').delete().in('id', removedDayIds)
+          if (dayErr) throw new Error('A removed day has logged sessions, so it can\'t be deleted. Rename it instead.')
         }
-        const { error: dayErr } = await supabase.from('program_days').delete().eq('program_id', id)
-        if (dayErr) throw dayErr
       } else {
         if (isActive) await supabase.from('programs').update({ is_active: false }).eq('user_id', user.id)
-        const { data: prog } = await supabase
+        const { data: prog, error: insErr } = await supabase
           .from('programs').insert({ name, description, user_id: user.id, is_active: isActive })
           .select().single()
+        if (insErr) throw insErr
         programId = prog.id
       }
+
+      let scheduleChanged = false
       for (let i = 0; i < days.length; i++) {
         const day = days[i]
-        const { data: insertedDay } = await supabase
-          .from('program_days').insert({ program_id: programId, day_order: i + 1, name: day.name })
-          .select().single()
-        if (day.exercises.length > 0) {
-          await supabase.from('program_exercises').insert(
-            day.exercises.map((ex, j) => ({
-              program_day_id: insertedDay.id, exercise_order: j + 1,
-              name: ex.name, sets: Number(ex.sets),
-              rep_min: Number(ex.rep_min), rep_max: Number(ex.rep_max),
-              current_weight: Number(ex.current_weight), weight_unit: ex.weight_unit,
-              weight_increment: Number(ex.weight_increment), notes: ex.notes || null,
-            }))
-          )
+        let dayId = day.id
+
+        if (dayId) {
+          const { error } = await supabase.from('program_days').update({ name: day.name, day_order: i + 1 }).eq('id', dayId)
+          if (error) throw error
+          // Renamed? Ripple the new name into past sessions + week schedule
+          const oldName = dbDayNames[dayId]
+          if (oldName && oldName !== day.name) {
+            await supabase.from('workout_sessions').update({ day_name: day.name }).eq('program_day_id', dayId)
+            if (weekSchedule) {
+              weekSchedule = weekSchedule.map((l) => (l === oldName ? day.name : l))
+              scheduleChanged = true
+            }
+          }
+        } else {
+          const { data: ins, error } = await supabase
+            .from('program_days').insert({ program_id: programId, day_order: i + 1, name: day.name })
+            .select().single()
+          if (error) throw error
+          dayId = ins.id
+        }
+
+        // Exercises: update kept, insert new, delete removed
+        const { data: dbExs } = await supabase.from('program_exercises').select('id, name').eq('program_day_id', dayId)
+        const keptExIds = day.exercises.map((e) => e.id).filter(Boolean)
+        const removedExIds = (dbExs || []).filter((e) => !keptExIds.includes(e.id)).map((e) => e.id)
+        if (removedExIds.length) await supabase.from('program_exercises').delete().in('id', removedExIds)
+
+        for (let j = 0; j < day.exercises.length; j++) {
+          const ex = day.exercises[j]
+          const payload = {
+            exercise_order: j + 1, name: ex.name, sets: Number(ex.sets),
+            rep_min: Number(ex.rep_min), rep_max: Number(ex.rep_max),
+            current_weight: Number(ex.current_weight), weight_unit: ex.weight_unit,
+            weight_increment: Number(ex.weight_increment), notes: ex.notes || null,
+          }
+          if (ex.id) {
+            const { error } = await supabase.from('program_exercises').update({ ...payload, program_day_id: dayId }).eq('id', ex.id)
+            if (error) throw error
+            const oldExName = (dbExs || []).find((e) => e.id === ex.id)?.name
+            if (oldExName && oldExName !== ex.name) {
+              await supabase.from('set_logs').update({ exercise_name: ex.name }).eq('program_exercise_id', ex.id)
+            }
+          } else {
+            const { error } = await supabase.from('program_exercises').insert({ ...payload, program_day_id: dayId })
+            if (error) throw error
+          }
         }
       }
+      if (scheduleChanged) await supabase.from('programs').update({ week_schedule: weekSchedule }).eq('id', programId)
       navigate('/')
     } catch (err) {
       alert(err.message)
