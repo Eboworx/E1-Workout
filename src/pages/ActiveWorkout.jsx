@@ -543,8 +543,8 @@ export default function ActiveWorkout() {
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--bg)' }}>
 
       {/* Header */}
-      <div className="sticky top-0 z-10 px-4 pb-3" style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border)', paddingTop: 'max(12px, env(safe-area-inset-top, 12px))' }}>
-        <div className="flex items-center justify-between mb-2">
+      <div className="sticky top-0 z-10 px-4 pb-2" style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border)', paddingTop: 'max(8px, env(safe-area-inset-top, 8px))' }}>
+        <div className="flex items-center justify-between mb-1">
           <button onClick={() => navigate('/')} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}>
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{ color: 'var(--text-2)' }}>
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -564,7 +564,7 @@ export default function ActiveWorkout() {
             >rest {formatTime(restDur)}</button>
           </div>
         </div>
-        <div style={{ height: 2, background: 'var(--surface-2)', borderRadius: 1, overflow: 'hidden', marginTop: 12 }}>
+        <div style={{ height: 2, background: 'var(--surface-2)', borderRadius: 1, overflow: 'hidden', marginTop: 6 }}>
           <div className="transition-all duration-300" style={{ height: '100%', width: `${pct}%`, background: 'var(--text)', borderRadius: 1 }} />
         </div>
       </div>
@@ -600,7 +600,7 @@ export default function ActiveWorkout() {
       )}
 
       {/* Exercises */}
-      <div className="flex-1 px-4 pt-3 max-w-lg mx-auto w-full" style={{ paddingBottom: '120px' }}>
+      <div className="flex-1 px-4 pt-2 max-w-lg mx-auto w-full" style={{ paddingBottom: '108px' }}>
 
         {/* Session history panel */}
         {sessionHistory.length > 0 && (
@@ -636,7 +636,7 @@ export default function ActiveWorkout() {
         )}
 
         {/* Ab warm-up */}
-        <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '16px', padding: '14px 16px', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '14px', padding: '9px 14px', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '12px' }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <p style={{ fontFamily: 'var(--font-display)', fontSize: '10px', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-3)', margin: '0 0 3px' }}>Ab warm-up</p>
             {abIdx === null ? (
@@ -711,13 +711,13 @@ export default function ActiveWorkout() {
       </div>
 
       {/* Bottom finish bar */}
-      <div className="sticky bottom-0 px-4 pt-4" style={{ background: 'var(--bg)', borderTop: '1px solid var(--border)', paddingBottom: 'max(16px, env(safe-area-inset-bottom, 16px))' }}>
+      <div className="sticky bottom-0 px-4 pt-3" style={{ background: 'var(--bg)', borderTop: '1px solid var(--border)', paddingBottom: 'max(12px, env(safe-area-inset-bottom, 12px))' }}>
         <button onClick={finishWorkout} disabled={finishing || done === 0}
           className="w-full disabled:opacity-30"
-          style={{ background: 'var(--text)', color: 'var(--bg)', border: 'none', borderRadius: '14px', padding: '16px', fontFamily: 'var(--font-display)', fontSize: '14px', fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', cursor: 'pointer' }}>
+          style={{ background: 'var(--text)', color: 'var(--bg)', border: 'none', borderRadius: '13px', padding: '13px', fontFamily: 'var(--font-display)', fontSize: '13px', fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', cursor: 'pointer' }}>
           {finishing ? 'Saving...' : `Finish Workout · ${done}/${total}`}
         </button>
-        <button onClick={abandonWorkout} style={{ width: '100%', marginTop: '10px', background: 'none', border: 'none', color: 'var(--text-3)', fontSize: '12px', fontFamily: "'Oxanium', sans-serif", letterSpacing: '0.1em', cursor: 'pointer', padding: '4px 0 0' }}>
+        <button onClick={abandonWorkout} style={{ width: '100%', marginTop: '5px', background: 'none', border: 'none', color: 'var(--text-3)', fontSize: '11px', fontFamily: "'Oxanium', sans-serif", letterSpacing: '0.1em', cursor: 'pointer', padding: '3px 0 0' }}>
           Abandon workout
         </button>
       </div>
@@ -965,7 +965,7 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
 
         {/* ── Panel 2: Live ── */}
         <div style={{ ...cardStyle }}>
-          <div style={{ padding: isSuperset ? '10px 14px 6px' : '12px 16px 8px', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+          <div style={{ padding: isSuperset ? '8px 12px 4px' : '9px 14px 5px', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
             {/* Drag handle */}
             <div
               {...dragListeners}
@@ -981,7 +981,7 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
 
             <div style={{ flex: 1 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-                <h3 style={{ fontFamily: 'var(--font-display)', fontSize: isSuperset ? '14px' : '17px', fontWeight: 600, color: isSuperset ? 'var(--gold-soft)' : 'var(--text)', margin: 0 }}>{ex.name}</h3>
+                <h3 style={{ fontFamily: 'var(--font-display)', fontSize: isSuperset ? '13px' : '15px', fontWeight: 600, color: isSuperset ? 'var(--gold-soft)' : 'var(--text)', margin: 0 }}>{ex.name}</h3>
                 {isSuperset && (
                   <span style={{ fontSize: '8px', fontFamily: "'Oxanium', sans-serif", letterSpacing: '0.12em', color: 'var(--gold)', border: '1px solid rgba(200,168,75,0.3)', borderRadius: '3px', padding: '0px 4px', flexShrink: 0 }}>SS</span>
                 )}
@@ -1030,17 +1030,9 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
           </div>
 
           {/* Set rows */}
-          <div style={{ padding: isSuperset ? '0 12px 8px' : '0 16px 10px' }}>
-            <div className="set-grid" style={{ marginBottom: '6px' }}>
-              <span />
-              <span className="col-head">{(ex.weight_unit || 'lbs').toUpperCase()}</span>
-              <span className="col-head">REPS</span>
-              <span />
-              <span />
-            </div>
-
+          <div style={{ padding: isSuperset ? '0 12px 6px' : '0 14px 7px' }}>
             {sets.map((set, idx) => (
-              <div key={idx} className={`set-grid${set.completed ? ' set-row-done' : ''}`} style={{ marginBottom: isSuperset ? '5px' : '8px' }}>
+              <div key={idx} className={`set-grid${set.completed ? ' set-row-done' : ''}`} style={{ marginBottom: isSuperset ? '4px' : '5px' }}>
                 <span className={`set-num${idx === activeSetIdx ? ' active' : ''}`}>
                   {idx + 1}
                 </span>
@@ -1049,7 +1041,7 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
                   onChange={(e) => onUpdateSet(idx, 'weight', e.target.value)}
                   onFocus={(e) => e.target.select()}
                   className="set-input"
-                  style={isSuperset ? { height: 36, fontSize: 15 } : undefined}
+                  style={isSuperset ? { height: 32, fontSize: 14 } : undefined}
                   step="2.5" min="0" inputMode="decimal"
                 />
                 <input
@@ -1058,13 +1050,13 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
                   onFocus={(e) => e.target.select()}
                   className="set-input"
                   style={{
-                    ...(isSuperset ? { height: 36, fontSize: 15 } : {}),
+                    ...(isSuperset ? { height: 32, fontSize: 14 } : {}),
                     ...(!set.completed && set.actual_reps !== null && set.actual_reps < ex.rep_min ? { color: 'var(--gold)' } : {}),
                   }}
                   placeholder={`${ex.rep_min}–${ex.rep_max}`}
                   min="0" max="100" inputMode="numeric"
                 />
-                <button onClick={() => onToggleComplete(idx)} className={`chk-btn${set.completed ? ' on' : ''}`} style={isSuperset ? { width: 36, height: 36 } : undefined}>
+                <button onClick={() => onToggleComplete(idx)} className={`chk-btn${set.completed ? ' on' : ''}`} style={isSuperset ? { width: 32, height: 32 } : undefined}>
                   <svg width="16" height="16" fill="none" stroke={set.completed ? 'var(--bg)' : 'transparent'} viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                   </svg>
@@ -1080,7 +1072,7 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
             ))}
 
             {/* Add set */}
-            <button onClick={onAddSet} style={{ width: '100%', marginTop: '4px', background: 'none', border: '1px dashed var(--border)', borderRadius: '10px', padding: '6px', fontSize: '10px', color: 'var(--text-3)', cursor: 'pointer', letterSpacing: '0.14em', fontFamily: 'var(--font-display)' }}>
+            <button onClick={onAddSet} style={{ display: 'block', margin: '2px auto 0', background: 'none', border: 'none', padding: '3px 14px', fontSize: '10px', color: 'var(--text-3)', cursor: 'pointer', letterSpacing: '0.14em', fontFamily: 'var(--font-display)' }}>
               + ADD SET
             </button>
 
@@ -1095,7 +1087,7 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
 
       {/* Scroll dots */}
       {!isSuperset && (
-      <div style={{ display: 'flex', justifyContent: 'center', gap: '5px', marginTop: '4px' }}>
+      <div style={{ display: 'flex', justifyContent: 'center', gap: '5px', marginTop: '3px' }}>
         <div style={{ width: 5, height: 5, borderRadius: '50%', background: onHistoryPanel ? 'var(--text-2)' : 'var(--border-2)', transition: 'background 0.2s' }} />
         <div style={{ width: 5, height: 5, borderRadius: '50%', background: onHistoryPanel ? 'var(--border-2)' : 'var(--text-2)', transition: 'background 0.2s' }} />
       </div>
