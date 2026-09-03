@@ -211,6 +211,16 @@ export default function WorkoutPicker() {
     if (calOpen) loadCalMonth()
   }
 
+  async function removeLoggedSession(sessId) {
+    if (!window.confirm('Remove this logged session? Its sets are deleted too.')) return
+    setBackfillSaving(true)
+    const { error } = await supabase.from('workout_sessions').delete().eq('id', sessId)
+    setBackfillSaving(false)
+    if (error) { alert(error.message); return }
+    loadData()
+    if (calOpen) loadCalMonth()
+  }
+
   async function backfillMarkDone(day) {
     setBackfillSaving(true)
     const iso = backfillNoon()
@@ -689,6 +699,24 @@ export default function WorkoutPicker() {
                 CHANGE PLAN
               </button>
             </div>
+
+            {/* Already logged that day — removable */}
+            {weekSessions
+              .filter((s) => new Date(s.completed_at).toDateString() === backfillDate.toDateString())
+              .map((s) => (
+                <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--surface-3)', border: '1px solid var(--border-2)', borderRadius: '12px', padding: '12px 14px', marginBottom: '8px' }}>
+                  <div style={{ flex: 1 }}>
+                    <p style={{ fontFamily: 'var(--font-display)', fontSize: '14px', fontWeight: 600, color: 'var(--text)', margin: 0 }}>{s.day_name}</p>
+                    <p style={{ fontSize: '10px', color: 'var(--text-3)', margin: '1px 0 0', letterSpacing: '0.08em', fontFamily: 'var(--font-display)' }}>LOGGED</p>
+                  </div>
+                  <button
+                    onClick={() => removeLoggedSession(s.id)}
+                    disabled={backfillSaving}
+                    style={{ background: 'none', border: '1px solid var(--border-2)', borderRadius: '8px', padding: '7px 12px', fontFamily: 'var(--font-display)', fontSize: '10px', letterSpacing: '0.1em', color: 'var(--gold)', cursor: 'pointer' }}>
+                    REMOVE
+                  </button>
+                </div>
+              ))}
 
             {days.map((day) => (
               <div key={day.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: '12px', padding: '12px 14px', marginBottom: '8px' }}>

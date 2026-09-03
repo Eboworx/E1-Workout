@@ -925,9 +925,10 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
           borderRadius: isSuperset ? '12px' : '16px',
         }}
       >
-        {/* ── Panel 1: History ── */}
-        <div style={{ ...cardStyle, borderColor: 'var(--border)', background: 'var(--surface)' }}>
-          <div style={{ padding: '10px 14px 8px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        {/* ── Panel 1: History — scrolls inside, never taller than the live panel ── */}
+        <div style={{ ...cardStyle, borderColor: 'var(--border)', background: 'var(--surface)', position: 'relative' }}>
+          <div style={{ position: 'absolute', inset: 0, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
+          <div style={{ padding: '10px 14px 8px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', position: 'sticky', top: 0, background: 'var(--surface)', zIndex: 1 }}>
             <div>
               <p style={{ fontSize: '10px', letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--text-3)', margin: '0 0 2px' }}>← back to live</p>
               <h3 style={{ fontFamily: 'var(--font-display)', fontSize: isSuperset ? '15px' : '17px', fontWeight: 600, color: 'var(--text)', margin: 0 }}>{ex.name}</h3>
@@ -960,6 +961,7 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
                 </div>
               ))
             )}
+          </div>
           </div>
         </div>
 
