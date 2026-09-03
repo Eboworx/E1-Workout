@@ -325,6 +325,15 @@ export default function ActiveWorkout() {
     })
   }
 
+  async function saveExerciseName(exerciseId, name) {
+    const n = (name || '').trim()
+    if (!n) return
+    setExercises((prev) => prev.map((e) => e.id === exerciseId ? { ...e, name: n } : e))
+    await supabase.from('program_exercises').update({ name: n }).eq('id', exerciseId)
+    // Keep past logged sets in sync so history/progress show the new name
+    await supabase.from('set_logs').update({ exercise_name: n }).eq('program_exercise_id', exerciseId)
+  }
+
   async function saveRepRange(exerciseId, min, max) {
     const minN = parseInt(min, 10)
     const maxN = parseInt(max, 10)
@@ -687,6 +696,7 @@ export default function ActiveWorkout() {
                     onAddSet={() => addSet(ex.id)}
                     onRemoveSet={(setIdx) => removeSet(ex.id, setIdx)}
                     onSaveRepRange={(min, max) => saveRepRange(ex.id, min, max)}
+                    onSaveName={(name) => saveExerciseName(ex.id, name)}
                     onSetCount={(count) => setExerciseSetCount(ex.id, count)}
                   />
                   {/* Between-exercise insert row — hidden when a superset is attached below */}
@@ -844,13 +854,14 @@ function SortableExerciseCard(props) {
 
 // ── Swipeable exercise card ──────────────────────────────────────────────────
 
-function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, onUpdateSet, onToggleComplete, onNavigate, onAddSet, onRemoveSet, onSaveRepRange, onSetCount, dragListeners, dragAttributes, isDragging }) {
+function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, onUpdateSet, onToggleComplete, onNavigate, onAddSet, onRemoveSet, onSaveRepRange, onSaveName, onSetCount, dragListeners, dragAttributes, isDragging }) {
   const scrollRef = useRef(null)
   const [onHistoryPanel, setOnHistoryPanel] = useState(false)
   const [editReps, setEditReps] = useState(false)
   const [editMin, setEditMin] = useState(ex.rep_min)
   const [editMax, setEditMax] = useState(ex.rep_max)
   const [editSets, setEditSets] = useState(sets.length)
+  const [editName, setEditName] = useState(ex.name)
 
   const isSuperset = ex.is_superset
   const activeSetIdx = sets.findIndex((s) => !s.completed)
@@ -870,6 +881,7 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
     setEditMin(ex.rep_min)
     setEditMax(ex.rep_max)
     setEditSets(sets.length)
+    setEditName(ex.name)
     setEditReps(true)
   }
 
@@ -879,6 +891,7 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
     if (!isNaN(targetSets) && targetSets !== sets.length) {
       onSetCount(targetSets)
     }
+    if (editName.trim() && editName.trim() !== ex.name) onSaveName(editName)
     setEditReps(false)
   }
 
@@ -977,6 +990,9 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
               </div>
               {editReps ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
+                  <input type="text" value={editName} onChange={(e) => setEditName(e.target.value)}
+                    placeholder="Exercise name"
+                    style={{ width: '100%', fontSize: '13px', background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border-2)', borderRadius: '6px', padding: '4px 8px', outline: 'none', marginBottom: '4px', boxSizing: 'border-box' }} />
                   <input type="number" value={editSets} onChange={(e) => setEditSets(e.target.value)} onFocus={(e) => e.target.select()}
                     min="1" max="10"
                     style={{ width: 30, textAlign: 'center', fontSize: '12px', background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border-2)', borderRadius: '6px', padding: '2px 4px', outline: 'none' }} />

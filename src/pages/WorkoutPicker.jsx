@@ -38,10 +38,10 @@ function dayInitials(name) {
   const lower = n.toLowerCase()
   if (lower.startsWith('run')) return 'RUN'
   if (lower.startsWith('rec')) return 'REC'
-  if (lower.startsWith('push')) return 'PS'
-  if (lower.startsWith('pull')) return 'PL'
   const numbered = n.match(/^(\w)\w*\s+(\d+)$/) // "Lower 1" → L1
   if (numbered) return (numbered[1] + numbered[2]).toUpperCase()
+  if (lower.includes('push')) return 'PS'
+  if (lower.includes('pull')) return 'PL'
   const words = n.split(/\s+/)
   if (words.length > 1) return (words[0][0] + words[1][0]).toUpperCase()
   return n.slice(0, 2).toUpperCase()
@@ -82,6 +82,26 @@ export default function WorkoutPicker() {
   }
 
   useEffect(() => { loadData() }, [])
+
+  async function renameDay(day) {
+    const input = window.prompt('Rename workout', day.name)
+    const newName = input?.trim()
+    if (!newName || newName === day.name) return
+    await supabase.from('program_days').update({ name: newName }).eq('id', day.id)
+    // Keep past sessions, the week strip, and this week's plan in sync
+    await supabase.from('workout_sessions').update({ day_name: newName })
+      .eq('user_id', user.id).eq('day_name', day.name)
+    if (activeProgram?.week_schedule) {
+      const sched = activeProgram.week_schedule.map((l) => (l === day.name ? newName : l))
+      await supabase.from('programs').update({ week_schedule: sched }).eq('id', activeProgram.id)
+    }
+    if (weekPlan && activeProgram) {
+      const mondayIso = getWeekBounds().monday.toISOString().slice(0, 10)
+      const nextPlan = weekPlan.map((l) => (l === day.name ? newName : l))
+      localStorage.setItem(PLAN_KEY(activeProgram.id, mondayIso), JSON.stringify(nextPlan))
+    }
+    loadData()
+  }
 
   async function loadData() {
     setLoading(true)
@@ -386,7 +406,11 @@ export default function WorkoutPicker() {
           {hero && (
             <div style={{ background: 'var(--surface)', border: '1px solid var(--border-2)', borderRadius: '18px', padding: '18px 18px 16px', marginBottom: '16px' }}>
               <p style={{ fontFamily: 'var(--font-display)', fontSize: '10px', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-2)', margin: '0 0 6px' }}>Up next</p>
-              <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '24px', fontWeight: 600, color: 'var(--text)', margin: 0 }}>{hero.name}</h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '24px', fontWeight: 600, color: 'var(--text)', margin: 0 }}>{hero.name}</h3>
+                <button onClick={() => renameDay(hero)} aria-label="Rename workout"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', fontSize: '14px', padding: '2px 4px' }}>✎</button>
+              </div>
               <p style={{ fontSize: '12px', color: 'var(--text-3)', margin: '3px 0 0' }}>
                 {exCounts[hero.id] || 0} exercise{(exCounts[hero.id] || 0) !== 1 ? 's' : ''} · day {hero.day_order} of {days.length}
               </p>
@@ -407,7 +431,11 @@ export default function WorkoutPicker() {
               {queueDays.map((day) => (
                 <div key={day.id} onClick={() => startWorkout(day)} style={{ ...rowStyle, cursor: 'pointer', opacity: starting && starting !== day.id ? 0.4 : 1 }}>
                   <div style={{ flex: 1 }}>
-                    <p style={{ fontFamily: 'var(--font-display)', fontSize: '15px', fontWeight: 600, color: 'var(--text)', margin: 0 }}>{day.name}</p>
+                    <p style={{ fontFamily: 'var(--font-display)', fontSize: '15px', fontWeight: 600, color: 'var(--text)', margin: 0 }}>
+                      {day.name}
+                      <span onClick={(e) => { e.stopPropagation(); renameDay(day) }}
+                        style={{ color: 'var(--text-3)', fontSize: '12px', marginLeft: 8, cursor: 'pointer' }}>✎</span>
+                    </p>
                     <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: '2px 0 0' }}>
                       {exCounts[day.id] || 0} exercise{(exCounts[day.id] || 0) !== 1 ? 's' : ''} · day {day.day_order} of {days.length}
                     </p>
