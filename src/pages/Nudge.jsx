@@ -29,7 +29,7 @@ function loadSettings() {
     const s = JSON.parse(localStorage.getItem(STORE_KEY))
     if (s && typeof s === 'object') return s
   } catch { /* ignore */ }
-  return { mode: 'posture', durationMins: 30, intervalMins: 5, sound: true, haptic: true }
+  return { mode: 'posture', durationMins: 30, intervalMins: 5, sound: true, haptic: true, soundId: 'chime' }
 }
 
 // ── Audio: soft two-note chime via Web Audio (no asset needed) ──
@@ -42,22 +42,103 @@ function ensureAudio() {
   if (audioCtx?.state === 'suspended') audioCtx.resume()
   return audioCtx
 }
-function playChime() {
+// Single decaying tone. All times relative to ctx.currentTime + delay.
+function tone(ctx, { freq, type = 'sine', delay = 0, attack = 0.02, decay = 1.2, gain = 0.25, slideTo = null, vibrato = 0 }) {
+  const t0 = ctx.currentTime + delay
+  const osc = ctx.createOscillator()
+  const g = ctx.createGain()
+  osc.type = type
+  osc.frequency.setValueAtTime(freq, t0)
+  if (slideTo) osc.frequency.exponentialRampToValueAtTime(slideTo, t0 + decay * 0.7)
+  if (vibrato) {
+    const lfo = ctx.createOscillator()
+    const lfoGain = ctx.createGain()
+    lfo.frequency.value = 4.5
+    lfoGain.gain.value = vibrato
+    lfo.connect(lfoGain).connect(osc.frequency)
+    lfo.start(t0)
+    lfo.stop(t0 + attack + decay + 0.1)
+  }
+  g.gain.setValueAtTime(0, t0)
+  g.gain.linearRampToValueAtTime(gain, t0 + attack)
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + attack + decay)
+  osc.connect(g).connect(ctx.destination)
+  osc.start(t0)
+  osc.stop(t0 + attack + decay + 0.1)
+}
+
+// Filtered noise swell (waves / breath textures)
+function noiseSwell(ctx, { delay = 0, dur = 2, gain = 0.18, filterType = 'lowpass', from = 400, to = 1400, q = 0.8 }) {
+  const t0 = ctx.currentTime + delay
+  const len = Math.ceil(ctx.sampleRate * dur)
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate)
+  const data = buf.getChannelData(0)
+  for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1
+  const src = ctx.createBufferSource()
+  src.buffer = buf
+  const filt = ctx.createBiquadFilter()
+  filt.type = filterType
+  filt.Q.value = q
+  filt.frequency.setValueAtTime(from, t0)
+  filt.frequency.linearRampToValueAtTime(to, t0 + dur * 0.45)
+  filt.frequency.linearRampToValueAtTime(from, t0 + dur)
+  const g = ctx.createGain()
+  g.gain.setValueAtTime(0, t0)
+  g.gain.linearRampToValueAtTime(gain, t0 + dur * 0.4)
+  g.gain.linearRampToValueAtTime(0.0001, t0 + dur)
+  src.connect(filt).connect(g).connect(ctx.destination)
+  src.start(t0)
+  src.stop(t0 + dur)
+}
+
+export const SOUNDS = [
+  { id: 'chime', label: 'Chime', play: (ctx) => {
+    tone(ctx, { freq: 523.25 })
+    tone(ctx, { freq: 783.99, delay: 0.18 })
+  } },
+  { id: 'bowl', label: 'Bowl', play: (ctx) => {
+    tone(ctx, { freq: 220, decay: 3.2, gain: 0.22 })
+    tone(ctx, { freq: 221.6, decay: 3.2, gain: 0.14 }) // beat frequency shimmer
+    tone(ctx, { freq: 662, decay: 2.2, gain: 0.05 })
+  } },
+  { id: 'drift', label: 'Drift', play: (ctx) => {
+    tone(ctx, { freq: 392, attack: 0.6, decay: 2.2, gain: 0.2, vibrato: 3 })
+    tone(ctx, { freq: 587.33, attack: 0.9, decay: 1.9, gain: 0.09, vibrato: 3 })
+  } },
+  { id: 'wave', label: 'Wave', play: (ctx) => {
+    noiseSwell(ctx, { dur: 2.6, gain: 0.16, from: 300, to: 1100 })
+  } },
+  { id: 'droplet', label: 'Droplet', play: (ctx) => {
+    tone(ctx, { freq: 980, slideTo: 420, decay: 0.5, gain: 0.22 })
+    tone(ctx, { freq: 1230, slideTo: 540, decay: 0.45, gain: 0.1, delay: 0.28 })
+  } },
+  { id: 'bell', label: 'Bell', play: (ctx) => {
+    tone(ctx, { freq: 660, decay: 2.4, gain: 0.2 })
+    tone(ctx, { freq: 1056, decay: 1.6, gain: 0.07 }) // inharmonic partial
+  } },
+  { id: 'marimba', label: 'Marimba', play: (ctx) => {
+    tone(ctx, { freq: 440, type: 'triangle', decay: 0.6, gain: 0.28 })
+    tone(ctx, { freq: 880, type: 'sine', decay: 0.35, gain: 0.08 })
+    tone(ctx, { freq: 587.33, type: 'triangle', decay: 0.7, gain: 0.2, delay: 0.22 })
+  } },
+  { id: 'breath', label: 'Breath', play: (ctx) => {
+    noiseSwell(ctx, { dur: 1.6, gain: 0.14, filterType: 'bandpass', from: 600, to: 1000, q: 1.2 })
+  } },
+  { id: 'pluck', label: 'Pluck', play: (ctx) => {
+    tone(ctx, { freq: 587.33, type: 'triangle', attack: 0.005, decay: 0.4, gain: 0.26 })
+    tone(ctx, { freq: 440, type: 'triangle', attack: 0.005, decay: 0.5, gain: 0.2, delay: 0.16 })
+  } },
+  { id: 'hum', label: 'Hum', play: (ctx) => {
+    tone(ctx, { freq: 146.83, attack: 0.3, decay: 2.4, gain: 0.3 })
+    tone(ctx, { freq: 293.66, attack: 0.4, decay: 2, gain: 0.1 })
+  } },
+]
+
+function playSound(id) {
   const ctx = ensureAudio()
   if (!ctx) return
-  const now = ctx.currentTime
-  ;[[523.25, 0], [783.99, 0.18]].forEach(([freq, delay]) => {
-    const osc = ctx.createOscillator()
-    const gain = ctx.createGain()
-    osc.type = 'sine'
-    osc.frequency.value = freq
-    gain.gain.setValueAtTime(0, now + delay)
-    gain.gain.linearRampToValueAtTime(0.25, now + delay + 0.02)
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + delay + 1.2)
-    osc.connect(gain).connect(ctx.destination)
-    osc.start(now + delay)
-    osc.stop(now + delay + 1.3)
-  })
+  const s = SOUNDS.find((x) => x.id === id) || SOUNDS[0]
+  s.play(ctx)
 }
 function buzz() {
   if (navigator.vibrate) navigator.vibrate([180, 90, 180])
@@ -174,7 +255,7 @@ export default function Nudge() {
   }, [running, paused])
 
   function fireNudge() {
-    if (settings.sound) playChime()
+    if (settings.sound) playSound(settings.soundId)
     if (settings.haptic) buzz()
     setNudgeCount((c) => c + 1)
     setCueFlash(true)
@@ -235,7 +316,7 @@ export default function Nudge() {
       }
     }, 250)
     return () => clearInterval(tickRef.current)
-  }, [running, paused, settings.sound, settings.haptic, settings.intervalMins])
+  }, [running, paused, settings.sound, settings.haptic, settings.intervalMins, settings.soundId])
 
   useEffect(() => () => { clearInterval(tickRef.current); releaseWakeLock() }, [])
 
@@ -385,6 +466,28 @@ export default function Nudge() {
             <Toggle label="Sound" on={settings.sound} onChange={(sound) => set({ sound })} />
             <Toggle label="Vibrate" on={settings.haptic} onChange={(haptic) => set({ haptic })} />
           </div>
+          {/* Sound picker — tap to select & preview */}
+          {settings.sound && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '8px', marginTop: '10px' }}>
+              {SOUNDS.map((s) => {
+                const on = s.id === (settings.soundId || 'chime')
+                return (
+                  <button
+                    key={s.id}
+                    onClick={() => { set({ soundId: s.id }); playSound(s.id) }}
+                    style={{
+                      padding: '10px 0', borderRadius: '10px', cursor: 'pointer',
+                      fontFamily: F, fontSize: '11px', letterSpacing: '0.04em',
+                      background: on ? 'var(--text)' : 'var(--surface)',
+                      color: on ? '#141414' : 'var(--text-2)',
+                      border: `1px solid ${on ? 'var(--text)' : 'var(--border)'}`,
+                      transition: 'background 0.15s, color 0.15s',
+                    }}
+                  >{s.label}</button>
+                )
+              })}
+            </div>
+          )}
           {!navigator.vibrate && settings.haptic && (
             <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: '8px 2px 0', fontFamily: 'system-ui' }}>
               Vibration isn't supported on this device (iOS) — sound will still play.
