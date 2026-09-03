@@ -14,6 +14,31 @@ import { AB_BANK } from '../lib/abBank'
 
 const PROGRESS_KEY = (id) => `workout_progress_${id}`
 const AB_KEY = (id) => `ab_warmup_${id}`
+const REST_DUR_KEY = 'rest_duration_secs'
+const REST_PRESETS = [60, 90, 120, 150, 180]
+
+// Soft double-beep when rest is up
+function restBeep() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext
+    if (!Ctx) return
+    const ctx = new Ctx()
+    ;[0, 0.22].forEach((delay) => {
+      const t0 = ctx.currentTime + delay
+      const osc = ctx.createOscillator()
+      const g = ctx.createGain()
+      osc.type = 'sine'
+      osc.frequency.value = 880
+      g.gain.setValueAtTime(0, t0)
+      g.gain.linearRampToValueAtTime(0.25, t0 + 0.02)
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.5)
+      osc.connect(g).connect(ctx.destination)
+      osc.start(t0)
+      osc.stop(t0 + 0.55)
+    })
+  } catch { /* ignore */ }
+  if (navigator.vibrate) navigator.vibrate([200, 100, 200])
+}
 
 export default function ActiveWorkout() {
   const { sessionId } = useParams()
@@ -39,6 +64,52 @@ export default function ActiveWorkout() {
   const [abPickerOpen, setAbPickerOpen] = useState(false)
   const timerRef = useRef(null)
   const startRef = useRef(Date.now())
+
+  // Rest timer
+  const [restEndAt, setRestEndAt] = useState(null)
+  const [restLeft, setRestLeft] = useState(0)
+  const [restDur, setRestDur] = useState(() => {
+    const v = parseInt(localStorage.getItem(REST_DUR_KEY), 10)
+    return v > 0 ? v : 120
+  })
+  const restTickRef = useRef(null)
+
+  function startRest() {
+    setRestEndAt(Date.now() + restDur * 1000)
+    setRestLeft(restDur)
+  }
+
+  function adjustRest(delta) {
+    setRestDur((d) => {
+      const next = Math.min(600, Math.max(15, d + delta))
+      localStorage.setItem(REST_DUR_KEY, String(next))
+      return next
+    })
+    if (restEndAt) setRestEndAt((e) => e + delta * 1000)
+  }
+
+  function cycleRestPreset() {
+    setRestDur((d) => {
+      const i = REST_PRESETS.indexOf(d)
+      const next = REST_PRESETS[(i + 1) % REST_PRESETS.length] || REST_PRESETS[0]
+      localStorage.setItem(REST_DUR_KEY, String(next))
+      return next
+    })
+  }
+
+  useEffect(() => {
+    if (!restEndAt) { clearInterval(restTickRef.current); return }
+    restTickRef.current = setInterval(() => {
+      const left = Math.ceil((restEndAt - Date.now()) / 1000)
+      if (left <= 0) {
+        restBeep()
+        setRestEndAt(null)
+      } else {
+        setRestLeft(left)
+      }
+    }, 300)
+    return () => clearInterval(restTickRef.current)
+  }, [restEndAt])
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -263,6 +334,7 @@ export default function ActiveWorkout() {
   }
 
   function toggleComplete(exerciseId, setIdx) {
+    const willComplete = !(setLogs[exerciseId]?.[setIdx]?.completed)
     setSetLogs((prev) => {
       const sets = [...prev[exerciseId]]
       const set = sets[setIdx]
@@ -274,6 +346,7 @@ export default function ActiveWorkout() {
       }
       return { ...prev, [exerciseId]: sets }
     })
+    if (willComplete) startRest()
   }
 
   async function addExercise() {
@@ -470,19 +543,55 @@ export default function ActiveWorkout() {
           </button>
           <div className="text-center">
             <h1 style={{ fontFamily: 'var(--font-display)', fontSize: '13px', fontWeight: 600, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--text)', margin: 0 }}>{session?.day_name}</h1>
-            <p style={{ fontFamily: 'var(--font-display)', fontSize: '11px', fontWeight: 300, color: isBackdated ? 'var(--gold)' : 'var(--text-2)', fontVariantNumeric: 'tabular-nums', margin: '1px 0 0', letterSpacing: isBackdated ? '0.08em' : 'normal' }}>
+            <p style={{ fontFamily: 'var(--font-display)', fontSize: isBackdated ? '11px' : '19px', fontWeight: isBackdated ? 300 : 500, color: isBackdated ? 'var(--gold)' : 'var(--text)', fontVariantNumeric: 'tabular-nums', margin: '1px 0 0', letterSpacing: isBackdated ? '0.08em' : '0.04em' }}>
               {isBackdated ? `LOGGING FOR ${startedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase()}` : formatTime(elapsed)}
             </p>
           </div>
-          <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', color: 'var(--text-3)', fontVariantNumeric: 'tabular-nums', minWidth: 32, textAlign: 'right' }}>{done}/{total}</span>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3 }}>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', color: 'var(--text-3)', fontVariantNumeric: 'tabular-nums', minWidth: 32, textAlign: 'right' }}>{done}/{total}</span>
+            <button
+              onClick={cycleRestPreset}
+              style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: '10px', padding: '2px 8px', fontSize: '10px', color: 'var(--text-2)', fontFamily: 'var(--font-display)', letterSpacing: '0.06em', cursor: 'pointer', fontVariantNumeric: 'tabular-nums' }}
+            >rest {formatTime(restDur)}</button>
+          </div>
         </div>
         <div style={{ height: 2, background: 'var(--surface-2)', borderRadius: 1, overflow: 'hidden', marginTop: 12 }}>
           <div className="transition-all duration-300" style={{ height: '100%', width: `${pct}%`, background: 'var(--text)', borderRadius: 1 }} />
         </div>
       </div>
 
+      {/* Rest timer — sticks to top while counting down */}
+      {restEndAt && (
+        <div style={{
+          position: 'fixed', zIndex: 40,
+          top: 'calc(env(safe-area-inset-top, 0px) + 78px)',
+          left: '50%', transform: 'translateX(-50%)',
+          width: 192, height: 96,
+          background: 'var(--text)', borderRadius: 18,
+          boxShadow: '0 10px 32px rgba(0,0,0,0.55)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '0 8px',
+        }}>
+          <button onClick={() => adjustRest(-15)}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#141414', opacity: 0.55, fontSize: '13px', fontFamily: 'var(--font-display)', fontWeight: 600, padding: '8px 6px' }}
+          >−15</button>
+          <div style={{ textAlign: 'center' }}>
+            <p style={{ fontFamily: 'var(--font-display)', fontSize: '9px', letterSpacing: '0.22em', textTransform: 'uppercase', color: '#141414', opacity: 0.5, margin: 0 }}>Rest</p>
+            <p style={{ fontFamily: 'var(--font-display)', fontSize: '42px', fontWeight: 600, lineHeight: 1, color: '#141414', margin: 0, fontVariantNumeric: 'tabular-nums' }}>
+              {formatTime(restLeft)}
+            </p>
+          </div>
+          <button onClick={() => adjustRest(15)}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#141414', opacity: 0.55, fontSize: '13px', fontFamily: 'var(--font-display)', fontWeight: 600, padding: '8px 6px' }}
+          >+15</button>
+          <button onClick={() => setRestEndAt(null)}
+            style={{ position: 'absolute', top: -8, right: -8, width: 24, height: 24, borderRadius: '50%', background: 'var(--surface-3)', border: '1px solid var(--border-2)', color: 'var(--text-2)', fontSize: '12px', lineHeight: 1, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}
+          >✕</button>
+        </div>
+      )}
+
       {/* Exercises */}
-      <div className="flex-1 px-4 pt-3 max-w-lg mx-auto w-full" style={{ paddingBottom: '160px' }}>
+      <div className="flex-1 px-4 pt-3 max-w-lg mx-auto w-full" style={{ paddingBottom: '120px' }}>
 
         {/* Session history panel */}
         {sessionHistory.length > 0 && (
@@ -580,8 +689,10 @@ export default function ActiveWorkout() {
                     onSaveRepRange={(min, max) => saveRepRange(ex.id, min, max)}
                     onSetCount={(count) => setExerciseSetCount(ex.id, count)}
                   />
-                  {/* Between-exercise insert row */}
-                  <BetweenAddRow onAdd={(isSuperset) => openAddModal(idx, isSuperset)} />
+                  {/* Between-exercise insert row — hidden when a superset is attached below */}
+                  {!exercises[idx + 1]?.is_superset && (
+                    <BetweenAddRow onAdd={(isSuperset) => openAddModal(idx, isSuperset)} />
+                  )}
                 </div>
               )
             })}
@@ -699,7 +810,7 @@ export default function ActiveWorkout() {
 
 function BetweenAddRow({ onAdd }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '5px 2px' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '3px 2px' }}>
       <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
       <button
         onClick={() => onAdd(false)}
@@ -775,9 +886,10 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
   const cardBg = 'var(--surface)'
 
   const cardStyle = {
-    borderRadius: '16px',
+    borderRadius: isSuperset ? '0 0 12px 12px' : '16px',
     overflow: 'hidden',
     border: `1px solid ${borderColor}`,
+    borderLeft: isSuperset ? '2px solid rgba(200,168,75,0.45)' : `1px solid ${borderColor}`,
     background: cardBg,
     flex: '0 0 100%',
     minWidth: '100%',
@@ -785,13 +897,7 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
   }
 
   return (
-    <div style={{ position: 'relative', marginLeft: isSuperset ? '12px' : 0 }}>
-      {isSuperset && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-          <div style={{ width: 2, height: 14, background: '#c8a84b40', borderRadius: 1 }} />
-          <p style={{ fontSize: '10px', color: 'var(--gold)', fontFamily: "'Oxanium', sans-serif", letterSpacing: '0.14em', textTransform: 'uppercase', margin: 0 }}>Superset</p>
-        </div>
-      )}
+    <div style={{ position: 'relative', marginLeft: isSuperset ? '18px' : 0, marginTop: isSuperset ? '-5px' : 0 }}>
 
       <div
         ref={scrollRef}
@@ -800,7 +906,7 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
           display: 'flex', overflowX: 'scroll',
           scrollSnapType: 'x mandatory', scrollbarWidth: 'none',
           msOverflowStyle: 'none', WebkitOverflowScrolling: 'touch',
-          borderRadius: '16px',
+          borderRadius: isSuperset ? '0 0 12px 12px' : '16px',
         }}
       >
         {/* ── Panel 1: History ── */}
@@ -859,7 +965,10 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
 
             <div style={{ flex: 1 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-                <h3 style={{ fontFamily: 'var(--font-display)', fontSize: isSuperset ? '15px' : '17px', fontWeight: 600, color: isSuperset ? 'var(--gold-soft)' : 'var(--text)', margin: 0 }}>{ex.name}</h3>
+                <h3 style={{ fontFamily: 'var(--font-display)', fontSize: isSuperset ? '14px' : '17px', fontWeight: 600, color: isSuperset ? 'var(--gold-soft)' : 'var(--text)', margin: 0 }}>{ex.name}</h3>
+                {isSuperset && (
+                  <span style={{ fontSize: '8px', fontFamily: "'Oxanium', sans-serif", letterSpacing: '0.12em', color: 'var(--gold)', border: '1px solid rgba(200,168,75,0.3)', borderRadius: '3px', padding: '0px 4px', flexShrink: 0 }}>SS</span>
+                )}
                 {readyToIncrease && (
                   <span style={{ fontSize: '9px', fontFamily: "'Oxanium', sans-serif", letterSpacing: '0.08em', textTransform: 'uppercase', background: 'rgba(200,168,75,0.15)', color: 'var(--gold)', border: '1px solid rgba(200,168,75,0.3)', borderRadius: '4px', padding: '1px 5px', flexShrink: 0 }}>
                     ⬆ add weight
@@ -902,7 +1011,7 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
           </div>
 
           {/* Set rows */}
-          <div style={{ padding: isSuperset ? '0 14px 12px' : '0 16px 14px' }}>
+          <div style={{ padding: isSuperset ? '0 12px 8px' : '0 16px 10px' }}>
             <div className="set-grid" style={{ marginBottom: '6px' }}>
               <span />
               <span className="col-head">{(ex.weight_unit || 'lbs').toUpperCase()}</span>
@@ -912,7 +1021,7 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
             </div>
 
             {sets.map((set, idx) => (
-              <div key={idx} className={`set-grid${set.completed ? ' set-row-done' : ''}`} style={{ marginBottom: '8px' }}>
+              <div key={idx} className={`set-grid${set.completed ? ' set-row-done' : ''}`} style={{ marginBottom: isSuperset ? '5px' : '8px' }}>
                 <span className={`set-num${idx === activeSetIdx ? ' active' : ''}`}>
                   {idx + 1}
                 </span>
@@ -921,6 +1030,7 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
                   onChange={(e) => onUpdateSet(idx, 'weight', e.target.value)}
                   onFocus={(e) => e.target.select()}
                   className="set-input"
+                  style={isSuperset ? { height: 36, fontSize: 15 } : undefined}
                   step="2.5" min="0" inputMode="decimal"
                 />
                 <input
@@ -928,11 +1038,14 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
                   onChange={(e) => onUpdateSet(idx, 'actual_reps', e.target.value)}
                   onFocus={(e) => e.target.select()}
                   className="set-input"
-                  style={!set.completed && set.actual_reps !== null && set.actual_reps < ex.rep_min ? { color: 'var(--gold)' } : undefined}
+                  style={{
+                    ...(isSuperset ? { height: 36, fontSize: 15 } : {}),
+                    ...(!set.completed && set.actual_reps !== null && set.actual_reps < ex.rep_min ? { color: 'var(--gold)' } : {}),
+                  }}
                   placeholder={`${ex.rep_min}–${ex.rep_max}`}
                   min="0" max="100" inputMode="numeric"
                 />
-                <button onClick={() => onToggleComplete(idx)} className={`chk-btn${set.completed ? ' on' : ''}`}>
+                <button onClick={() => onToggleComplete(idx)} className={`chk-btn${set.completed ? ' on' : ''}`} style={isSuperset ? { width: 36, height: 36 } : undefined}>
                   <svg width="16" height="16" fill="none" stroke={set.completed ? 'var(--bg)' : 'transparent'} viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                   </svg>
@@ -948,7 +1061,7 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
             ))}
 
             {/* Add set */}
-            <button onClick={onAddSet} style={{ width: '100%', marginTop: '6px', background: 'none', border: '1px dashed var(--border)', borderRadius: '10px', padding: '9px', fontSize: '10px', color: 'var(--text-3)', cursor: 'pointer', letterSpacing: '0.14em', fontFamily: 'var(--font-display)' }}>
+            <button onClick={onAddSet} style={{ width: '100%', marginTop: '4px', background: 'none', border: '1px dashed var(--border)', borderRadius: '10px', padding: '6px', fontSize: '10px', color: 'var(--text-3)', cursor: 'pointer', letterSpacing: '0.14em', fontFamily: 'var(--font-display)' }}>
               + ADD SET
             </button>
 
@@ -962,10 +1075,12 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
       </div>
 
       {/* Scroll dots */}
-      <div style={{ display: 'flex', justifyContent: 'center', gap: '5px', marginTop: '5px' }}>
+      {!isSuperset && (
+      <div style={{ display: 'flex', justifyContent: 'center', gap: '5px', marginTop: '4px' }}>
         <div style={{ width: 5, height: 5, borderRadius: '50%', background: onHistoryPanel ? 'var(--text-2)' : 'var(--border-2)', transition: 'background 0.2s' }} />
         <div style={{ width: 5, height: 5, borderRadius: '50%', background: onHistoryPanel ? 'var(--border-2)' : 'var(--text-2)', transition: 'background 0.2s' }} />
       </div>
+      )}
     </div>
   )
 }

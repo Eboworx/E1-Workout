@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { supabase } from '../lib/supabase'
+import { useAuth } from '../context/AuthContext'
+import { enablePush } from '../lib/push'
 
 // ── Session presets ──
 const DURATIONS = [
@@ -29,7 +32,7 @@ function loadSettings() {
     const s = JSON.parse(localStorage.getItem(STORE_KEY))
     if (s && typeof s === 'object') return s
   } catch { /* ignore */ }
-  return { mode: 'posture', durationMins: 30, intervalMins: 5, sound: true, haptic: true, soundId: 'chime' }
+  return { mode: 'posture', durationMins: 30, intervalMins: 5, sound: true, haptic: true, soundId: 'chime', delivery: 'app' }
 }
 
 // ── Audio: soft two-note chime via Web Audio (no asset needed) ──
@@ -213,7 +216,10 @@ function Toggle({ label, on, onChange }) {
 
 export default function Nudge() {
   const navigate = useNavigate()
+  const { user } = useAuth()
   const [settings, setSettings] = useState(loadSettings)
+  const [pushSession, setPushSession] = useState(null)
+  const [pushBusy, setPushBusy] = useState(false)
   const [running, setRunning] = useState(false)
   const [paused, setPaused] = useState(false)
   const [now, setNow] = useState(Date.now())
@@ -234,6 +240,42 @@ export default function Nudge() {
   })
 
   const mode = MODES.find((m) => m.id === settings.mode) || MODES[0]
+
+  // Resume an active push session if one exists (e.g. app was closed)
+  useEffect(() => {
+    if (!user) return
+    supabase.from('nudge_push_sessions').select('*')
+      .eq('user_id', user.id).limit(1).maybeSingle()
+      .then(({ data }) => { if (data) setPushSession(data) })
+  }, [user])
+
+  async function startPush() {
+    setPushBusy(true)
+    try {
+      const sub = await enablePush()
+      const intervalMins = Math.max(1, Math.round(settings.intervalMins))
+      const nowMs = Date.now()
+      const { data, error } = await supabase.from('nudge_push_sessions').insert({
+        user_id: user.id,
+        subscription: sub,
+        interval_mins: intervalMins,
+        cue: mode.cue,
+        ends_at: settings.durationMins ? new Date(nowMs + settings.durationMins * 60000).toISOString() : null,
+        next_at: new Date(nowMs + intervalMins * 60000).toISOString(),
+      }).select().single()
+      if (error) throw error
+      setPushSession(data)
+    } catch (e) {
+      alert(e.message || 'Could not start notification nudges.')
+    } finally {
+      setPushBusy(false)
+    }
+  }
+
+  async function endPush() {
+    if (pushSession) await supabase.from('nudge_push_sessions').delete().eq('id', pushSession.id)
+    setPushSession(null)
+  }
 
   async function acquireWakeLock() {
     try {
@@ -323,6 +365,40 @@ export default function Nudge() {
   const remaining = endAtRef.current ? (endAtRef.current - now) / 1000 : null
   const untilNudge = nextNudgeRef.current ? (nextNudgeRef.current - now) / 1000 : null
 
+  // ── Active push session view ──
+  if (pushSession) {
+    const endsAt = pushSession.ends_at ? new Date(pushSession.ends_at) : null
+    return (
+      <div style={{ background: '#0d0d0d', minHeight: '100dvh', display: 'flex', flexDirection: 'column', padding: '0 24px' }} className="safe-top safe-bottom">
+        <div style={{ padding: '24px 0 0' }}>
+          <p style={{ ...labelStyle, margin: 0 }}>Notification nudges · every {pushSession.interval_mins}m</p>
+        </div>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '14px', textAlign: 'center' }}>
+          <p style={{ fontFamily: F, fontWeight: 300, fontSize: '40px', lineHeight: 1.2, color: 'var(--text)', margin: 0 }}>
+            Nudges are on
+          </p>
+          <p style={{ fontFamily: F, fontSize: '13px', letterSpacing: '0.06em', color: 'var(--text-2)', margin: 0, lineHeight: 1.6 }}>
+            {pushSession.cue}
+          </p>
+          <p style={{ fontSize: '12px', color: 'var(--text-3)', margin: '8px 0 0', fontFamily: 'system-ui', lineHeight: 1.6 }}>
+            You can close the app — nudges arrive as notifications
+            {endsAt ? ` until ${endsAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ' until you end the session'}.
+          </p>
+        </div>
+        <div style={{ paddingBottom: '24px' }}>
+          <button
+            onClick={endPush}
+            style={{
+              width: '100%', padding: '18px 0', borderRadius: '14px', cursor: 'pointer',
+              background: 'var(--text)', border: 'none', color: '#141414',
+              fontFamily: F, fontSize: '15px', fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase',
+            }}
+          >End session</button>
+        </div>
+      </div>
+    )
+  }
+
   // ── Running view ──
   if (running) {
     return (
@@ -406,6 +482,20 @@ export default function Nudge() {
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '24px', paddingTop: '24px' }}>
         <div>
+          <p style={labelStyle}>Delivery</p>
+          <Segmented
+            options={[{ label: 'In-app', value: 'app' }, { label: 'Notification', value: 'push' }]}
+            value={settings.delivery || 'app'}
+            onChange={(delivery) => set({ delivery })}
+          />
+          {settings.delivery === 'push' && (
+            <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: '8px 2px 0', fontFamily: 'system-ui', lineHeight: 1.5 }}>
+              Works with the app closed. Uses your phone's notification sound & vibration. Minimum interval 1 minute.
+            </p>
+          )}
+        </div>
+
+        <div>
           <p style={labelStyle}>Focus</p>
           <Segmented
             options={MODES.map((m) => ({ label: m.label, value: m.id }))}
@@ -460,6 +550,7 @@ export default function Nudge() {
           </div>
         </div>
 
+        {settings.delivery !== 'push' && (
         <div>
           <p style={labelStyle}>Alert</p>
           <div style={{ display: 'flex', gap: '10px' }}>
@@ -494,21 +585,26 @@ export default function Nudge() {
             </p>
           )}
         </div>
+        )}
 
+        {settings.delivery !== 'push' && (
         <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: '0 2px', fontFamily: 'system-ui', lineHeight: 1.5 }}>
           Keep the app open during a session — the screen stays awake while it runs.
         </p>
+        )}
       </div>
 
       <div style={{ paddingBottom: '24px' }}>
         <button
-          onClick={start}
+          onClick={settings.delivery === 'push' ? startPush : start}
+          disabled={pushBusy}
           style={{
             width: '100%', padding: '18px 0', borderRadius: '14px', cursor: 'pointer',
             background: 'var(--text)', border: 'none', color: '#141414',
             fontFamily: F, fontSize: '15px', fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase',
+            opacity: pushBusy ? 0.5 : 1,
           }}
-        >Start session</button>
+        >{pushBusy ? 'Starting…' : 'Start session'}</button>
       </div>
     </div>
   )
