@@ -349,6 +349,34 @@ export default function Nudge() {
             value={settings.intervalMins}
             onChange={(intervalMins) => set({ intervalMins })}
           />
+          {/* Custom interval */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: '10px', marginTop: '8px',
+            background: 'var(--surface)', borderRadius: '10px', padding: '6px 14px',
+            border: `1px solid ${INTERVALS.some((i) => i.mins === settings.intervalMins) ? 'var(--border)' : 'var(--text)'}`,
+          }}>
+            <span style={{ fontFamily: F, fontSize: '11px', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-3)' }}>
+              Custom
+            </span>
+            <input
+              type="number"
+              inputMode="decimal"
+              min="0.25"
+              step="any"
+              placeholder="min"
+              value={INTERVALS.some((i) => i.mins === settings.intervalMins) ? '' : settings.intervalMins}
+              onChange={(e) => {
+                const v = parseFloat(e.target.value)
+                if (!isNaN(v) && v > 0) set({ intervalMins: v })
+              }}
+              style={{
+                flex: 1, background: 'transparent', border: 'none', outline: 'none',
+                fontFamily: F, fontSize: '16px', color: 'var(--text)', textAlign: 'right',
+                padding: '6px 0',
+              }}
+            />
+            <span style={{ fontFamily: F, fontSize: '12px', color: 'var(--text-3)' }}>min</span>
+          </div>
         </div>
 
         <div>
