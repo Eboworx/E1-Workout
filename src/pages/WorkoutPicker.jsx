@@ -438,9 +438,13 @@ export default function WorkoutPicker() {
             <div style={{ background: 'var(--surface)', border: '1px solid var(--border-2)', borderRadius: '18px', padding: '18px 18px 16px', marginBottom: '16px' }}>
               <p style={{ fontFamily: 'var(--font-display)', fontSize: '10px', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-2)', margin: '0 0 6px' }}>Up next</p>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '24px', fontWeight: 600, color: 'var(--text)', margin: 0 }}>{hero.name}</h3>
+                <h3 onClick={() => navigate(`/day/${hero.id}`)} style={{ fontFamily: 'var(--font-display)', fontSize: '24px', fontWeight: 600, color: 'var(--text)', margin: 0, cursor: 'pointer' }}>{hero.name}</h3>
                 <button onClick={() => renameDay(hero)} aria-label="Rename workout"
                   style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', fontSize: '14px', padding: '2px 4px' }}>✎</button>
+                <button onClick={() => navigate(`/day/${hero.id}`)}
+                  style={{ marginLeft: 'auto', background: 'none', border: '1px solid var(--border-2)', borderRadius: '8px', padding: '5px 10px', fontFamily: 'var(--font-display)', fontSize: '10px', letterSpacing: '0.1em', color: 'var(--text-2)', cursor: 'pointer' }}>
+                  VIEW
+                </button>
               </div>
               <p style={{ fontSize: '12px', color: 'var(--text-3)', margin: '3px 0 0' }}>
                 {exCounts[hero.id] || 0} exercise{(exCounts[hero.id] || 0) !== 1 ? 's' : ''} · day {hero.day_order} of {days.length}
@@ -460,7 +464,7 @@ export default function WorkoutPicker() {
             <>
               <p style={{ fontFamily: 'var(--font-display)', fontSize: '10px', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-3)', margin: '0 0 10px' }}>Rest of the week</p>
               {queueDays.map((day) => (
-                <div key={day.id} onClick={() => startWorkout(day)} style={{ ...rowStyle, cursor: 'pointer', opacity: starting && starting !== day.id ? 0.4 : 1 }}>
+                <div key={day.id} onClick={() => navigate(`/day/${day.id}`)} style={{ ...rowStyle, cursor: 'pointer', opacity: starting && starting !== day.id ? 0.4 : 1 }}>
                   <div style={{ flex: 1 }}>
                     <p style={{ fontFamily: 'var(--font-display)', fontSize: '15px', fontWeight: 600, color: 'var(--text)', margin: 0 }}>
                       {day.name}

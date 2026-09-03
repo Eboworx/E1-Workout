@@ -14,6 +14,7 @@ import WorkoutPicker from './pages/WorkoutPicker'
 import Progress from './pages/Progress'
 import Onboarding from './pages/Onboarding'
 import Nudge from './pages/Nudge'
+import DayPreview from './pages/DayPreview'
 
 function SplashScreen({ opacity }) {
   return (
@@ -92,6 +93,7 @@ function AppRoutes() {
         <Route path="programs/new" element={<ProgramBuilder />} />
         <Route path="programs/:id/edit" element={<ProgramBuilder />} />
         <Route path="workout-picker" element={<WorkoutPicker />} />
+        <Route path="day/:dayId" element={<DayPreview />} />
         <Route path="progress" element={<Progress />} />
         <Route path="nudge" element={<Nudge />} />
         <Route path="history" element={<History />} />

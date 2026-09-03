@@ -899,10 +899,9 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
   const cardBg = 'var(--surface)'
 
   const cardStyle = {
-    borderRadius: isSuperset ? '0 0 12px 12px' : '16px',
+    borderRadius: isSuperset ? '12px' : '16px',
     overflow: 'hidden',
-    border: `1px solid ${borderColor}`,
-    borderLeft: isSuperset ? '2px solid rgba(200,168,75,0.45)' : `1px solid ${borderColor}`,
+    border: `1px solid ${isSuperset ? 'rgba(200,168,75,0.25)' : borderColor}`,
     background: cardBg,
     flex: '0 0 100%',
     minWidth: '100%',
@@ -910,7 +909,11 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
   }
 
   return (
-    <div style={{ position: 'relative', marginLeft: isSuperset ? '18px' : 0, marginTop: isSuperset ? '-5px' : 0 }}>
+    <div style={{ position: 'relative', marginLeft: isSuperset ? '22px' : 0, marginTop: isSuperset ? '2px' : 0 }}>
+      {/* Gold connector to the exercise above */}
+      {isSuperset && (
+        <div style={{ position: 'absolute', left: -12, top: -14, width: 2, height: 'calc(50% + 14px)', background: 'rgba(200,168,75,0.35)', borderRadius: 1, pointerEvents: 'none' }} />
+      )}
 
       <div
         ref={scrollRef}
@@ -919,7 +922,7 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
           display: 'flex', overflowX: 'scroll',
           scrollSnapType: 'x mandatory', scrollbarWidth: 'none',
           msOverflowStyle: 'none', WebkitOverflowScrolling: 'touch',
-          borderRadius: isSuperset ? '0 0 12px 12px' : '16px',
+          borderRadius: isSuperset ? '12px' : '16px',
         }}
       >
         {/* ── Panel 1: History ── */}
