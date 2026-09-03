@@ -671,9 +671,24 @@ export default function WorkoutPicker() {
         <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
           <div onClick={() => { setBackfillDate(null); setQuickName('') }} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.6)' }} />
           <div style={{ position: 'relative', background: 'var(--surface)', borderRadius: '20px 20px 0 0', padding: '24px 20px', paddingBottom: 'max(32px, env(safe-area-inset-bottom, 32px))', zIndex: 1 }}>
-            <p style={{ fontFamily: 'var(--font-display)', fontSize: '11px', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-3)', margin: '0 0 16px' }}>
-              Log workout · <span style={{ color: 'var(--text-2)' }}>{backfillDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span>
-            </p>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '0 0 16px' }}>
+              <p style={{ fontFamily: 'var(--font-display)', fontSize: '11px', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-3)', margin: 0 }}>
+                Log workout · <span style={{ color: 'var(--text-2)' }}>{backfillDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span>
+              </p>
+              <button
+                onClick={() => {
+                  const mon = new Date(backfillDate)
+                  mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7))
+                  mon.setHours(0, 0, 0, 0)
+                  const idx = (backfillDate.getDay() + 6) % 7
+                  setBackfillDate(null)
+                  setQuickName('')
+                  setPlanEdit({ monday: mon, idx })
+                }}
+                style={{ background: 'none', border: '1px solid var(--border-2)', borderRadius: '8px', padding: '6px 10px', fontFamily: 'var(--font-display)', fontSize: '10px', letterSpacing: '0.1em', color: 'var(--text-2)', cursor: 'pointer', flexShrink: 0 }}>
+                CHANGE PLAN
+              </button>
+            </div>
 
             {days.map((day) => (
               <div key={day.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: '12px', padding: '12px 14px', marginBottom: '8px' }}>
