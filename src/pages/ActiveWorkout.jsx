@@ -5,12 +5,15 @@ import {
   useSensor, useSensors,
 } from '@dnd-kit/core'
 import {
-  SortableContext, useSortable, verticalListSortingStrategy, arrayMove,
+  SortableContext, useSortable, verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { supabase } from '../lib/supabase'
 import { checkProgression } from '../lib/progression'
 import { AB_BANK } from '../lib/abBank'
+import {
+  reorderExercises, visibleWhileDragging, insertExerciseAfter, withOrder, persistOrder, groupOf, isGroupEnd,
+} from '../lib/exerciseOrder'
 
 const PROGRESS_KEY = (id) => `workout_progress_${id}`
 const AB_KEY = (id) => `ab_warmup_${id}`
@@ -62,6 +65,8 @@ export default function ActiveWorkout() {
   const [abIdx, setAbIdx] = useState(null)
   const [abDone, setAbDone] = useState(false)
   const [abPickerOpen, setAbPickerOpen] = useState(false)
+  const [dragId, setDragId] = useState(null)
+  const [expanded, setExpanded] = useState({}) // exerciseId → true/false (manual override of the auto-expand)
   const timerRef = useRef(null)
   const startRef = useRef(Date.now())
 
@@ -144,7 +149,7 @@ export default function ActiveWorkout() {
 
     const { data: exs } = await supabase
       .from('program_exercises').select('*')
-      .eq('program_day_id', sess.program_day_id).order('exercise_order')
+      .eq('program_day_id', sess.program_day_id).order('exercise_order').order('id')
     setExercises(exs || [])
 
     // Load all past sessions for this day (for history panel)
@@ -257,15 +262,22 @@ export default function ActiveWorkout() {
 
   async function handleDragEnd(event) {
     const { active, over } = event
+    setDragId(null)
     if (!over || active.id === over.id) return
-    const oldIdx = exercises.findIndex((e) => e.id === active.id)
-    const newIdx = exercises.findIndex((e) => e.id === over.id)
-    const reordered = arrayMove(exercises, oldIdx, newIdx)
-    setExercises(reordered)
-    // Persist order (fire-and-forget)
-    reordered.forEach((ex, i) => {
-      supabase.from('program_exercises').update({ exercise_order: i + 1 }).eq('id', ex.id)
-    })
+    const prev = exercises
+    // Dragging a parent carries its supersets; a superset dropped elsewhere attaches to what's above it
+    const next = withOrder(reorderExercises(prev, active.id, over.id))
+    if (next === prev) return
+    setExercises(next)
+    try {
+      await persistOrder(next, prev)
+    } catch (err) {
+      alert(`Couldn't save order: ${err.message}`)
+    }
+  }
+
+  function toggleExpanded(exerciseId, autoOpen) {
+    setExpanded((prev) => ({ ...prev, [exerciseId]: !(prev[exerciseId] ?? autoOpen) }))
   }
 
   function openAddModal(afterIdx, isSuperset) {
@@ -355,13 +367,26 @@ export default function ActiveWorkout() {
       }
       return { ...prev, [exerciseId]: sets }
     })
-    if (willComplete) startRest()
+    if (willComplete) {
+      startRest()
+      // Finishing the last set hands the card back to auto-collapse (drops any manual "keep open")
+      const others = (setLogs[exerciseId] || []).filter((_, i) => i !== setIdx)
+      if (others.every((s) => s.completed)) {
+        setExpanded((prev) => {
+          if (!(exerciseId in prev)) return prev
+          const next = { ...prev }
+          delete next[exerciseId]
+          return next
+        })
+      }
+    }
   }
 
   async function addExercise() {
     if (!addExForm.name.trim()) return
     setAddingEx(true)
     try {
+      const insertIdx = insertAfterIdx === null ? exercises.length : insertAfterIdx + 1
       const { data: ex, error } = await supabase.from('program_exercises').insert({
         program_day_id: session.program_day_id,
         name: addExForm.name.trim(),
@@ -371,20 +396,20 @@ export default function ActiveWorkout() {
         current_weight: addExForm.weight,
         weight_unit: addExForm.unit,
         weight_increment: 2.5,
-        exercise_order: exercises.length + 1,
+        exercise_order: insertIdx + 1,
         is_superset: addExForm.isSuperset,
       }).select().single()
 
       if (error) throw error
 
       if (ex) {
-        // Insert at position (afterIdx + 1), or append if null / end
-        const insertIdx = insertAfterIdx === null ? exercises.length : insertAfterIdx + 1
-        setExercises((prev) => {
-          const next = [...prev]
-          next.splice(insertIdx, 0, ex)
-          return next
-        })
+        // Insert at position (afterIdx + 1), or append if null / end — then re-stamp
+        // every exercise's order so it stays put on reload.
+        const prev = exercises
+        const next = withOrder(insertExerciseAfter(prev, insertAfterIdx, ex))
+        setExercises(next)
+        persistOrder(next, prev).catch((e) => alert(`Couldn't save order: ${e.message}`))
+        setExpanded((m) => ({ ...m, [ex.id]: true }))
         setSetLogs((prev) => ({
           ...prev,
           [ex.id]: Array.from({ length: ex.sets }, (_, i) => ({
@@ -536,6 +561,14 @@ export default function ActiveWorkout() {
 
   const { done, total } = totalProgress()
   const pct = total > 0 ? Math.round((done / total) * 100) : 0
+
+  // Roadmap: the "current" exercise is the first one with an unfinished set; its
+  // whole group (parent + supersets) is open, everything else collapses to a row.
+  const currentEx = exercises.find((e) => (setLogs[e.id] || []).some((s) => !s.completed))
+  const currentGroupIds = new Set(currentEx ? groupOf(exercises, currentEx.id).map((e) => e.id) : [])
+  const visibleList = visibleWhileDragging(exercises, dragId)
+  const lastEx = exercises[exercises.length - 1]
+  const lastGroupOpen = !!lastEx && groupOf(exercises, lastEx.id).some((g) => (expanded[g.id] ?? currentGroupIds.has(g.id)))
   const startedDate = session?.started_at ? new Date(session.started_at) : null
   const isBackdated = startedDate && startedDate.toDateString() !== new Date().toDateString()
 
@@ -672,13 +705,24 @@ export default function ActiveWorkout() {
         </div>
 
         {/* Sortable exercise list */}
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-          <SortableContext items={exercises.map((e) => e.id)} strategy={verticalListSortingStrategy}>
-            {exercises.map((ex, idx) => {
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragStart={(e) => setDragId(e.active.id)}
+          onDragCancel={() => setDragId(null)}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext items={visibleList.map((e) => e.id)} strategy={verticalListSortingStrategy}>
+            {visibleList.map((ex, idx) => {
               const sets = setLogs[ex.id] || []
               const { done: exDone, total: exTotal } = exerciseProgress(ex.id)
               const allDone = exDone === exTotal && exTotal > 0
               const exHistory = history[ex.id] || []
+              const autoOpen = currentGroupIds.has(ex.id)
+              const isOpen = expanded[ex.id] ?? autoOpen
+              const realIdx = exercises.findIndex((e) => e.id === ex.id)
+              const groupEnd = isGroupEnd(exercises, realIdx)
+              const groupOpen = groupOf(exercises, ex.id).some((g) => (expanded[g.id] ?? currentGroupIds.has(g.id)))
 
               return (
                 <div key={ex.id}>
@@ -690,6 +734,11 @@ export default function ActiveWorkout() {
                     exHistory={exHistory}
                     fmtDate={fmtDate}
                     readyToIncrease={!!readyToIncrease[ex.id]}
+                    isOpen={isOpen}
+                    isCurrent={autoOpen}
+                    isFirst={idx === 0}
+                    carrying={ex.id === dragId ? exercises.length - visibleList.length : 0}
+                    onToggleOpen={() => toggleExpanded(ex.id, autoOpen)}
                     onUpdateSet={(setIdx, field, value) => updateSet(ex.id, setIdx, field, value)}
                     onToggleComplete={(setIdx) => toggleComplete(ex.id, setIdx)}
                     onNavigate={() => navigate(`/exercise/${ex.id}`)}
@@ -699,15 +748,20 @@ export default function ActiveWorkout() {
                     onSaveName={(name) => saveExerciseName(ex.id, name)}
                     onSetCount={(count) => setExerciseSetCount(ex.id, count)}
                   />
-                  {/* Between-exercise insert row — hidden when a superset is attached below */}
-                  {!exercises[idx + 1]?.is_superset && (
-                    <BetweenAddRow onAdd={(isSuperset) => openAddModal(idx, isSuperset)} />
+                  {/* Insert row — only under the open group, after its last item */}
+                  {groupEnd && groupOpen && !dragId && (
+                    <BetweenAddRow onAdd={(isSuperset) => openAddModal(realIdx, isSuperset)} />
                   )}
                 </div>
               )
             })}
           </SortableContext>
         </DndContext>
+
+        {/* Always-available add at the end of the day (unless the last group is open and already shows one) */}
+        {!lastGroupOpen && !dragId && (
+          <BetweenAddRow onAdd={(isSuperset) => openAddModal(exercises.length - 1, isSuperset)} />
+        )}
       </div>
 
       {/* Bottom finish bar */}
@@ -847,14 +901,101 @@ function SortableExerciseCard(props) {
   }
   return (
     <div ref={setNodeRef} style={style}>
-      <ExerciseCard {...props} dragListeners={listeners} dragAttributes={attributes} isDragging={isDragging} />
+      {props.isOpen
+        ? <ExerciseCard {...props} dragListeners={listeners} dragAttributes={attributes} isDragging={isDragging} />
+        : <CollapsedExerciseRow {...props} dragListeners={listeners} dragAttributes={attributes} />}
     </div>
   )
 }
 
-// ── Swipeable exercise card ──────────────────────────────────────────────────
+// ── Shared bits ──────────────────────────────────────────────────────────────
 
-function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, onUpdateSet, onToggleComplete, onNavigate, onAddSet, onRemoveSet, onSaveRepRange, onSaveName, onSetCount, dragListeners, dragAttributes, isDragging }) {
+function DragHandle({ listeners, attributes, style }) {
+  return (
+    <div
+      {...listeners}
+      {...attributes}
+      style={{ touchAction: 'none', cursor: 'grab', padding: '2px 8px 2px 0', color: 'var(--text-3)', flexShrink: 0, ...style }}
+    >
+      <svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor">
+        <circle cx="3" cy="3" r="1.5" /><circle cx="9" cy="3" r="1.5" />
+        <circle cx="3" cy="8" r="1.5" /><circle cx="9" cy="8" r="1.5" />
+        <circle cx="3" cy="13" r="1.5" /><circle cx="9" cy="13" r="1.5" />
+      </svg>
+    </div>
+  )
+}
+
+function SSBadge() {
+  return (
+    <span style={{ fontSize: '8px', fontFamily: "'Oxanium', sans-serif", letterSpacing: '0.12em', color: 'var(--gold)', border: '1px solid rgba(200,168,75,0.3)', borderRadius: '3px', padding: '0px 4px', flexShrink: 0 }}>SS</span>
+  )
+}
+
+function SupersetConnector() {
+  return <div style={{ position: 'absolute', left: -12, top: -14, width: 2, height: 'calc(50% + 14px)', background: 'rgba(200,168,75,0.35)', borderRadius: 1, pointerEvents: 'none' }} />
+}
+
+// ── Collapsed row (the "roadmap" view) ───────────────────────────────────────
+
+function CollapsedExerciseRow({ ex, sets, allDone, isFirst, carrying, onToggleOpen, dragListeners, dragAttributes }) {
+  const isSuperset = ex.is_superset && !isFirst
+  const doneSets = sets.filter((s) => s.completed)
+  const started = doneSets.length > 0
+
+  let summary
+  if (allDone) {
+    // e.g. "135 lbs × 10 · 10 · 9"
+    const weights = [...new Set(doneSets.map((s) => s.weight))]
+    const w = weights.length === 1 ? `${weights[0]} ${ex.weight_unit}` : `${Math.min(...weights)}–${Math.max(...weights)} ${ex.weight_unit}`
+    summary = `${w} × ${doneSets.map((s) => s.actual_reps ?? '–').join(' · ')}`
+  } else if (started) {
+    summary = `${doneSets.length}/${sets.length} done · ${ex.rep_min}–${ex.rep_max} reps · ${sets[doneSets.length]?.weight ?? ex.current_weight} ${ex.weight_unit}`
+  } else {
+    summary = `${sets.length} × ${ex.rep_min}–${ex.rep_max} · ${sets[0]?.weight ?? ex.current_weight} ${ex.weight_unit}`
+  }
+
+  return (
+    <div style={{ position: 'relative', marginLeft: isSuperset ? '22px' : 0, marginBottom: '6px' }}>
+      {isSuperset && <SupersetConnector />}
+      <div
+        onClick={onToggleOpen}
+        style={{
+          display: 'flex', alignItems: 'center', gap: '8px',
+          background: 'var(--surface)',
+          border: `1px solid ${isSuperset ? 'rgba(200,168,75,0.22)' : (allDone ? 'var(--border-2)' : 'var(--border)')}`,
+          borderRadius: isSuperset ? '12px' : '14px',
+          padding: isSuperset ? '7px 12px 7px 10px' : '9px 14px 9px 12px',
+          cursor: 'pointer',
+          opacity: allDone ? 0.72 : 1,
+        }}
+      >
+        <DragHandle listeners={dragListeners} attributes={dragAttributes} style={{ padding: '2px 6px 2px 0' }} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <p style={{ fontFamily: 'var(--font-display)', fontSize: isSuperset ? '13px' : '14px', fontWeight: 600, color: isSuperset ? 'var(--gold-soft)' : (allDone ? 'var(--text-2)' : 'var(--text)'), margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {ex.name}
+            </p>
+            {ex.is_superset && <SSBadge />}
+            {carrying > 0 && <span style={{ fontSize: '9px', fontFamily: "'Oxanium', sans-serif", letterSpacing: '0.1em', color: 'var(--gold)', flexShrink: 0 }}>+{carrying} SS</span>}
+          </div>
+          <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: '1px 0 0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>{summary}</p>
+        </div>
+        {allDone ? (
+          <span style={{ fontSize: '13px', color: 'var(--text-2)', flexShrink: 0 }}>✓</span>
+        ) : (
+          <svg width="12" height="12" fill="none" stroke="var(--text-3)" strokeWidth="2" viewBox="0 0 24 24" style={{ flexShrink: 0 }}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Swipeable exercise card (live panel first, swipe left for history) ───────
+
+function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, isCurrent, isFirst, carrying, onToggleOpen, onUpdateSet, onToggleComplete, onNavigate, onAddSet, onRemoveSet, onSaveRepRange, onSaveName, onSetCount, dragListeners, dragAttributes }) {
   const scrollRef = useRef(null)
   const [onHistoryPanel, setOnHistoryPanel] = useState(false)
   const [editReps, setEditReps] = useState(false)
@@ -863,18 +1004,19 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
   const [editSets, setEditSets] = useState(sets.length)
   const [editName, setEditName] = useState(ex.name)
 
-  const isSuperset = ex.is_superset
+  const isSuperset = ex.is_superset && !isFirst
   const activeSetIdx = sets.findIndex((s) => !s.completed)
 
-  useEffect(() => {
-    const el = scrollRef.current
-    if (el) el.scrollLeft = el.scrollWidth / 2
-  }, [])
-
+  // Live panel sits at scrollLeft 0, so a DOM move (reorder) or remount can never
+  // land us on history by accident — the browser resets scroll to 0.
   function handleScroll() {
     const el = scrollRef.current
     if (!el) return
-    setOnHistoryPanel(el.scrollLeft < el.clientWidth * 0.6)
+    setOnHistoryPanel(el.scrollLeft > el.clientWidth * 0.4)
+  }
+
+  function backToLive() {
+    scrollRef.current?.scrollTo({ left: 0, behavior: 'smooth' })
   }
 
   function openEditReps() {
@@ -895,25 +1037,25 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
     setEditReps(false)
   }
 
-  const borderColor = isSuperset ? 'rgba(200,168,75,0.18)' : (allDone ? 'var(--border-2)' : 'var(--border)')
-  const cardBg = 'var(--surface)'
+  const borderColor = isSuperset
+    ? 'rgba(200,168,75,0.25)'
+    : (isCurrent ? 'var(--border-2)' : (allDone ? 'var(--border-2)' : 'var(--border)'))
 
   const cardStyle = {
     borderRadius: isSuperset ? '12px' : '16px',
     overflow: 'hidden',
-    border: `1px solid ${isSuperset ? 'rgba(200,168,75,0.25)' : borderColor}`,
-    background: cardBg,
+    border: `1px solid ${borderColor}`,
+    background: 'var(--surface)',
     flex: '0 0 100%',
     minWidth: '100%',
     scrollSnapAlign: 'start',
   }
 
+  const rowH = isSuperset ? 32 : 36
+
   return (
-    <div style={{ position: 'relative', marginLeft: isSuperset ? '22px' : 0, marginTop: isSuperset ? '2px' : 0 }}>
-      {/* Gold connector to the exercise above */}
-      {isSuperset && (
-        <div style={{ position: 'absolute', left: -12, top: -14, width: 2, height: 'calc(50% + 14px)', background: 'rgba(200,168,75,0.35)', borderRadius: 1, pointerEvents: 'none' }} />
-      )}
+    <div style={{ position: 'relative', marginLeft: isSuperset ? '22px' : 0, marginTop: isSuperset ? '2px' : 0, marginBottom: '6px' }}>
+      {isSuperset && <SupersetConnector />}
 
       <div
         ref={scrollRef}
@@ -925,68 +1067,16 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
           borderRadius: isSuperset ? '12px' : '16px',
         }}
       >
-        {/* ── Panel 1: History — scrolls inside, never taller than the live panel ── */}
-        <div style={{ ...cardStyle, borderColor: 'var(--border)', background: 'var(--surface)', position: 'relative' }}>
-          <div style={{ position: 'absolute', inset: 0, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
-          <div style={{ padding: '10px 14px 8px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', position: 'sticky', top: 0, background: 'var(--surface)', zIndex: 1 }}>
-            <div>
-              <p style={{ fontSize: '10px', letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--text-3)', margin: '0 0 2px' }}>← back to live</p>
-              <h3 style={{ fontFamily: 'var(--font-display)', fontSize: isSuperset ? '15px' : '17px', fontWeight: 600, color: 'var(--text)', margin: 0 }}>{ex.name}</h3>
-            </div>
-            <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: 0 }}>History</p>
-          </div>
-          <div style={{ padding: '10px 14px 12px' }}>
-            {exHistory.length === 0 ? (
-              <p style={{ fontSize: '13px', color: 'var(--text-3)', textAlign: 'center', padding: '16px 0' }}>No history yet</p>
-            ) : (
-              exHistory.map((session, si) => (
-                <div key={si} style={{ marginBottom: si < exHistory.length - 1 ? '14px' : 0 }}>
-                  <p style={{ fontSize: '11px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '5px' }}>
-                    {fmtDate(session.date)}
-                  </p>
-                  {session.sets.map((s, i) => {
-                    const hitTarget = s.actual_reps >= s.target_reps
-                    return (
-                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 8px', borderRadius: '7px', marginBottom: '3px', background: 'var(--surface-2)' }}>
-                        <span style={{ fontSize: '11px', color: 'var(--text-3)', width: '16px' }}>#{s.set_number}</span>
-                        <span style={{ fontSize: '13px', color: 'var(--text)', fontWeight: 500 }}>{s.weight}</span>
-                        <span style={{ fontSize: '11px', color: 'var(--text-3)' }}>{ex.weight_unit}</span>
-                        <span style={{ fontSize: '11px', color: 'var(--text-3)' }}>×</span>
-                        <span style={{ fontSize: '13px', color: hitTarget ? 'var(--text)' : '#c8a84b', fontWeight: 500 }}>{s.actual_reps}</span>
-                        <span style={{ fontSize: '11px', color: 'var(--text-3)' }}>reps</span>
-                        {hitTarget && <span style={{ fontSize: '11px', color: 'var(--text-2)', marginLeft: 'auto' }}>✓</span>}
-                      </div>
-                    )
-                  })}
-                </div>
-              ))
-            )}
-          </div>
-          </div>
-        </div>
-
-        {/* ── Panel 2: Live ── */}
+        {/* ── Panel 1: Live ── */}
         <div style={{ ...cardStyle }}>
-          <div style={{ padding: isSuperset ? '8px 12px 4px' : '9px 14px 5px', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
-            {/* Drag handle */}
-            <div
-              {...dragListeners}
-              {...dragAttributes}
-              style={{ touchAction: 'none', cursor: 'grab', padding: '2px 8px 2px 0', color: 'var(--text-3)', flexShrink: 0, marginTop: '2px' }}
-            >
-              <svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor">
-                <circle cx="3" cy="3" r="1.5" /><circle cx="9" cy="3" r="1.5" />
-                <circle cx="3" cy="8" r="1.5" /><circle cx="9" cy="8" r="1.5" />
-                <circle cx="3" cy="13" r="1.5" /><circle cx="9" cy="13" r="1.5" />
-              </svg>
-            </div>
+          <div style={{ padding: isSuperset ? '7px 12px 3px' : '8px 14px 4px', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+            <DragHandle listeners={dragListeners} attributes={dragAttributes} style={{ marginTop: '2px' }} />
 
-            <div style={{ flex: 1 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-                <h3 style={{ fontFamily: 'var(--font-display)', fontSize: isSuperset ? '13px' : '15px', fontWeight: 600, color: isSuperset ? 'var(--gold-soft)' : 'var(--text)', margin: 0 }}>{ex.name}</h3>
-                {isSuperset && (
-                  <span style={{ fontSize: '8px', fontFamily: "'Oxanium', sans-serif", letterSpacing: '0.12em', color: 'var(--gold)', border: '1px solid rgba(200,168,75,0.3)', borderRadius: '3px', padding: '0px 4px', flexShrink: 0 }}>SS</span>
-                )}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' }}>
+                <h3 onClick={onToggleOpen} style={{ fontFamily: 'var(--font-display)', fontSize: isSuperset ? '13px' : '15px', fontWeight: 600, color: isSuperset ? 'var(--gold-soft)' : 'var(--text)', margin: 0, cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ex.name}</h3>
+                {ex.is_superset && <SSBadge />}
+                {carrying > 0 && <span style={{ fontSize: '9px', fontFamily: "'Oxanium', sans-serif", letterSpacing: '0.1em', color: 'var(--gold)', flexShrink: 0 }}>+{carrying} SS</span>}
                 {readyToIncrease && (
                   <span style={{ fontSize: '9px', fontFamily: "'Oxanium', sans-serif", letterSpacing: '0.08em', textTransform: 'uppercase', background: 'rgba(200,168,75,0.15)', color: 'var(--gold)', border: '1px solid rgba(200,168,75,0.3)', borderRadius: '4px', padding: '1px 5px', flexShrink: 0 }}>
                     ⬆ add weight
@@ -1021,20 +1111,25 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
               {allDone && <span style={{ fontSize: '13px', color: 'var(--text-2)' }}>✓</span>}
               {exHistory.length > 0 && !onHistoryPanel && (
-                <span style={{ fontSize: '10px', color: 'var(--text-3)', letterSpacing: '0.06em' }}>← hist</span>
+                <span style={{ fontSize: '10px', color: 'var(--text-3)', letterSpacing: '0.06em' }}>hist →</span>
               )}
               <button onClick={onNavigate} style={{ color: 'var(--text-3)', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}>
                 <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                 </svg>
               </button>
+              <button onClick={onToggleOpen} aria-label="Collapse" style={{ color: 'var(--text-3)', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}>
+                <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
+                </svg>
+              </button>
             </div>
           </div>
 
           {/* Set rows */}
-          <div style={{ padding: isSuperset ? '0 12px 6px' : '0 14px 7px' }}>
+          <div style={{ padding: isSuperset ? '0 12px 5px' : '0 14px 6px' }}>
             {sets.map((set, idx) => (
-              <div key={idx} className={`set-grid${set.completed ? ' set-row-done' : ''}`} style={{ marginBottom: isSuperset ? '4px' : '5px' }}>
+              <div key={idx} className={`set-grid${set.completed ? ' set-row-done' : ''}`} style={{ marginBottom: '4px' }}>
                 <span className={`set-num${idx === activeSetIdx ? ' active' : ''}`}>
                   {idx + 1}
                 </span>
@@ -1043,7 +1138,7 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
                   onChange={(e) => onUpdateSet(idx, 'weight', e.target.value)}
                   onFocus={(e) => e.target.select()}
                   className="set-input"
-                  style={isSuperset ? { height: 32, fontSize: 14 } : undefined}
+                  style={{ height: rowH, fontSize: isSuperset ? 14 : 16 }}
                   step="2.5" min="0" inputMode="decimal"
                 />
                 <input
@@ -1052,18 +1147,17 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
                   onFocus={(e) => e.target.select()}
                   className="set-input"
                   style={{
-                    ...(isSuperset ? { height: 32, fontSize: 14 } : {}),
+                    height: rowH, fontSize: isSuperset ? 14 : 16,
                     ...(!set.completed && set.actual_reps !== null && set.actual_reps < ex.rep_min ? { color: 'var(--gold)' } : {}),
                   }}
                   placeholder={`${ex.rep_min}–${ex.rep_max}`}
                   min="0" max="100" inputMode="numeric"
                 />
-                <button onClick={() => onToggleComplete(idx)} className={`chk-btn${set.completed ? ' on' : ''}`} style={isSuperset ? { width: 32, height: 32 } : undefined}>
+                <button onClick={() => onToggleComplete(idx)} className={`chk-btn${set.completed ? ' on' : ''}`} style={{ width: rowH - 2, height: rowH - 2 }}>
                   <svg width="16" height="16" fill="none" stroke={set.completed ? 'var(--bg)' : 'transparent'} viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                   </svg>
                 </button>
-                {/* Delete this set */}
                 {sets.length > 1 ? (
                   <button
                     onClick={() => onRemoveSet(idx)}
@@ -1073,26 +1167,67 @@ function ExerciseCard({ ex, sets, allDone, exHistory, fmtDate, readyToIncrease, 
               </div>
             ))}
 
-            {/* Add set */}
-            <button onClick={onAddSet} style={{ display: 'block', margin: '2px auto 0', background: 'none', border: 'none', padding: '3px 14px', fontSize: '10px', color: 'var(--text-3)', cursor: 'pointer', letterSpacing: '0.14em', fontFamily: 'var(--font-display)' }}>
-              + ADD SET
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '14px' }}>
+              <button onClick={onAddSet} style={{ background: 'none', border: 'none', padding: '2px 8px', fontSize: '10px', color: 'var(--text-3)', cursor: 'pointer', letterSpacing: '0.14em', fontFamily: 'var(--font-display)' }}>
+                + ADD SET
+              </button>
+            </div>
 
             {allDone && sets.every((s) => s.actual_reps >= ex.rep_max) && (
-              <p style={{ fontSize: '11px', textAlign: 'center', color: 'var(--text-2)', marginTop: '8px' }}>
-                All sets at max — weight increases {ex.weight_increment}{ex.weight_unit} next session
+              <p style={{ fontSize: '11px', textAlign: 'center', color: 'var(--text-2)', margin: '2px 0 4px' }}>
+                All sets at max — add {ex.weight_increment}{ex.weight_unit} next session
               </p>
             )}
           </div>
         </div>
+
+        {/* ── Panel 2: History — scrolls inside, never taller than the live panel ── */}
+        <div style={{ ...cardStyle, borderColor: 'var(--border)', position: 'relative' }}>
+          <div style={{ position: 'absolute', inset: 0, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
+            <div style={{ padding: '10px 14px 8px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', position: 'sticky', top: 0, background: 'var(--surface)', zIndex: 1 }}>
+              <div>
+                <p onClick={backToLive} style={{ fontSize: '10px', letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--text-3)', margin: '0 0 2px', cursor: 'pointer' }}>← back to live</p>
+                <h3 style={{ fontFamily: 'var(--font-display)', fontSize: isSuperset ? '15px' : '17px', fontWeight: 600, color: 'var(--text)', margin: 0 }}>{ex.name}</h3>
+              </div>
+              <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: 0 }}>History</p>
+            </div>
+            <div style={{ padding: '10px 14px 12px' }}>
+              {exHistory.length === 0 ? (
+                <p style={{ fontSize: '13px', color: 'var(--text-3)', textAlign: 'center', padding: '16px 0' }}>No history yet</p>
+              ) : (
+                exHistory.map((session, si) => (
+                  <div key={si} style={{ marginBottom: si < exHistory.length - 1 ? '14px' : 0 }}>
+                    <p style={{ fontSize: '11px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '5px' }}>
+                      {fmtDate(session.date)}
+                    </p>
+                    {session.sets.map((s, i) => {
+                      const hitTarget = s.actual_reps >= s.target_reps
+                      return (
+                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 8px', borderRadius: '7px', marginBottom: '3px', background: 'var(--surface-2)' }}>
+                          <span style={{ fontSize: '11px', color: 'var(--text-3)', width: '16px' }}>#{s.set_number}</span>
+                          <span style={{ fontSize: '13px', color: 'var(--text)', fontWeight: 500 }}>{s.weight}</span>
+                          <span style={{ fontSize: '11px', color: 'var(--text-3)' }}>{ex.weight_unit}</span>
+                          <span style={{ fontSize: '11px', color: 'var(--text-3)' }}>×</span>
+                          <span style={{ fontSize: '13px', color: hitTarget ? 'var(--text)' : '#c8a84b', fontWeight: 500 }}>{s.actual_reps}</span>
+                          <span style={{ fontSize: '11px', color: 'var(--text-3)' }}>reps</span>
+                          {hitTarget && <span style={{ fontSize: '11px', color: 'var(--text-2)', marginLeft: 'auto' }}>✓</span>}
+                        </div>
+                      )
+                    })}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
       </div>
 
-      {/* Scroll dots */}
-      {!isSuperset && (
-      <div style={{ display: 'flex', justifyContent: 'center', gap: '5px', marginTop: '3px' }}>
-        <div style={{ width: 5, height: 5, borderRadius: '50%', background: onHistoryPanel ? 'var(--text-2)' : 'var(--border-2)', transition: 'background 0.2s' }} />
-        <div style={{ width: 5, height: 5, borderRadius: '50%', background: onHistoryPanel ? 'var(--border-2)' : 'var(--text-2)', transition: 'background 0.2s' }} />
-      </div>
+      {/* Scroll dots — live · history */}
+      {!isSuperset && exHistory.length > 0 && (
+        <div style={{ display: 'flex', justifyContent: 'center', gap: '5px', marginTop: '3px' }}>
+          <div style={{ width: 4, height: 4, borderRadius: '50%', background: onHistoryPanel ? 'var(--border-2)' : 'var(--text-2)', transition: 'background 0.2s' }} />
+          <div style={{ width: 4, height: 4, borderRadius: '50%', background: onHistoryPanel ? 'var(--text-2)' : 'var(--border-2)', transition: 'background 0.2s' }} />
+        </div>
       )}
     </div>
   )

@@ -253,6 +253,56 @@ Full multi-step onboarding shown to new users before entering the app:
 
 ---
 
+## Sessions 4–? — 2026-07-25 → 2026-09-03 (NOT LOGGED — backfill needed)
+
+The log stops at Session 3 but the code moved on. From the source as of 2026-09-03 the following exists and has no log entry (dates from file mtimes, not commits — run `git log` to fill in properly):
+
+- **DayPreview page** (`src/pages/DayPreview.jsx`, route `/day/:dayId`) — per-day exercise list with drag-to-reorder (dnd-kit), add/edit/remove exercise sheet, rename day, Start Workout
+- **Supersets** — `program_exercises.is_superset` boolean (column exists in Supabase; **no migration file in `sql/`** — add one). Rendered indented + gold connector, "attaches to the exercise above"
+- **Active Workout additions** — rest timer (presets, ±15s, beep + vibrate), ab warm-up picker (`src/lib/abBank.js`), insert exercise/superset between cards, in-card edit of name / sets / rep range, per-set weights carried from last session, "add weight" indicator, backdated (retro-log) sessions, session-history panel
+- **Week strip / schedule** — `programs.week_schedule` jsonb (`sql/04_week_schedule.sql`), WorkoutPicker rewritten around it
+- **Nudge** — `src/pages/Nudge.jsx`, `src/lib/push.js`, `sql/05_nudge_push.sql`, edge function `supabase/functions/send-nudges`
+- **Goals** — `src/lib/goals.js`; Progress page expanded
+- Design tokens now include `--gold` / `--gold-soft` (progression + supersets only)
+
+---
+
+## Session — 2026-09-21
+
+### Bugs fixed
+
+| Bug | Root cause | Fix |
+|-----|-----------|-----|
+| Reordering an exercise mid-workout flipped the card to its History panel | React moves the card's DOM node on reorder; browsers reset a moved scroll container to `scrollLeft = 0`, which was the History panel (Live was on the right, set via a mount-only `scrollLeft` hack) | Panels swapped: **Live is now first (scrollLeft 0), swipe left for history.** No mount hack needed; reorders and remounts always land on Live |
+| Reordering never persisted (DayPreview *and* Active Workout) | `reordered.forEach(ex => supabase.from(...).update(...))` without `await` — supabase-js builders are lazy and only send when awaited/`.then`-ed, so **no reorder has ever been saved** | `persistOrder(next, prev)` in `src/lib/exerciseOrder.js` — awaits `Promise.all` of updates, only writes rows whose order changed, alerts on failure |
+| Supersets all ended up at the bottom of a workout | Every insert used `exercise_order = exercises.length + 1` regardless of where "+ ss" was tapped, and (see above) drag fixes were never saved | Insert stamps the real position, then the whole list is re-numbered and persisted |
+| Dragging a parent exercise left its supersets behind | Flat sort | A dragged parent **carries its supersets** (they're hidden during the drag, shown as "+N SS" on the card, re-attached on drop). A dragged superset moves alone and attaches to whatever is above it. A plain exercise can't be dropped into the middle of another group — it snaps after the target's supersets (moving down) or above the target's parent (moving up) |
+
+### Roadmap view (Active Workout)
+- Only the **current group** (first exercise with an unfinished set + its supersets) is expanded. Every other exercise collapses to a one-line row: name · `sets × reps · weight`, or the logged result (`135 lbs × 10 · 10 · 9 ✓`) once done, or `2/3 done` mid-way
+- Tap any row/heading to expand or collapse it manually; finishing an exercise's last set hands it back to auto-collapse so the next one opens
+- "+ ex / + ss" insert row now only appears under the open group (plus one at the end of the day) instead of between every card
+- Set rows tightened: 36px inputs (32px in supersets), 34px check button, less padding; scroll dots only when history exists
+- Exercise query now orders by `exercise_order, id` so ties are stable
+
+### Files
+- `src/lib/exerciseOrder.js` — new: `supersetChildren`, `groupOf`, `isGroupEnd`, `visibleWhileDragging`, `reorderExercises`, `insertExerciseAfter`, `withOrder`, `persistOrder`
+- `src/pages/ActiveWorkout.jsx` — panels swapped, collapsed rows, drag/insert/persist rewired, `DragHandle` / `SSBadge` / `SupersetConnector` / `CollapsedExerciseRow` components
+- `src/pages/DayPreview.jsx` — same drag/persist rewiring
+- `src/index.css` — `.set-grid` check column `auto`, `.chk-btn` 34px
+
+### Notes
+- No SQL this session. `is_superset` still needs a migration file for the record: `alter table program_exercises add column if not exists is_superset boolean not null default false;`
+- Session was run from Claude (cloud) linked to the Mac. The repo lives in iCloud Documents; several source files were cloud-only and had to be downloaded to read them. Git could not be read from the sandbox — commits/pushes done from Terminal.
+- Direction change to remember: **history is now to the right** (swipe left), hint reads "hist →"
+
+### Known issues / to-dos
+- [ ] Backfill Sessions 4+ in this log from `git log`
+- [ ] `sql/06_supersets.sql` for `is_superset`
+- [ ] Manual expand/collapse state is per-session (not persisted to localStorage)
+
+---
+
 ## End-of-session prompt (copy-paste this every session)
 
 ```

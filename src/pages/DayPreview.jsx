@@ -5,11 +5,12 @@ import {
   useSensor, useSensors,
 } from '@dnd-kit/core'
 import {
-  SortableContext, useSortable, verticalListSortingStrategy, arrayMove,
+  SortableContext, useSortable, verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { reorderExercises, visibleWhileDragging, withOrder, persistOrder } from '../lib/exerciseOrder'
 
 const F = 'var(--font-display)'
 
@@ -26,6 +27,7 @@ export default function DayPreview() {
   const [starting, setStarting] = useState(false)
   const [sheet, setSheet] = useState(null) // { mode: 'add'|'edit', form, exId? }
   const [saving, setSaving] = useState(false)
+  const [dragId, setDragId] = useState(null)
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -39,21 +41,25 @@ export default function DayPreview() {
     if (!d) { navigate('/workout-picker'); return }
     setDay(d)
     const { data: exs } = await supabase
-      .from('program_exercises').select('*').eq('program_day_id', dayId).order('exercise_order')
+      .from('program_exercises').select('*').eq('program_day_id', dayId)
+      .order('exercise_order').order('id')
     setExercises(exs || [])
     setLoading(false)
   }
 
   async function handleDragEnd(event) {
     const { active, over } = event
+    setDragId(null)
     if (!over || active.id === over.id) return
-    const oldIdx = exercises.findIndex((e) => e.id === active.id)
-    const newIdx = exercises.findIndex((e) => e.id === over.id)
-    const reordered = arrayMove(exercises, oldIdx, newIdx)
-    setExercises(reordered)
-    reordered.forEach((ex, i) => {
-      supabase.from('program_exercises').update({ exercise_order: i + 1 }).eq('id', ex.id)
-    })
+    const prev = exercises
+    const next = withOrder(reorderExercises(prev, active.id, over.id))
+    if (next === prev) return
+    setExercises(next)
+    try {
+      await persistOrder(next, prev)
+    } catch (err) {
+      alert(`Couldn't save order: ${err.message}`)
+    }
   }
 
   async function renameDay() {
@@ -96,7 +102,7 @@ export default function DayPreview() {
           exercise_order: exercises.length + 1,
         }).select().single()
         if (error) throw error
-        setExercises((prev) => [...prev, ins])
+        setExercises((prev) => withOrder([...prev, ins]))
       }
       setSheet(null)
     } catch (err) {
@@ -112,8 +118,11 @@ export default function DayPreview() {
     const { error } = await supabase.from('program_exercises').delete().eq('id', sheet.exId)
     setSaving(false)
     if (error) { alert(error.message); return }
-    setExercises((prev) => prev.filter((e) => e.id !== sheet.exId))
+    const prev = exercises
+    const next = withOrder(prev.filter((e) => e.id !== sheet.exId))
+    setExercises(next)
     setSheet(null)
+    persistOrder(next, prev).catch(() => {})
   }
 
   async function startWorkout() {
@@ -126,6 +135,8 @@ export default function DayPreview() {
     localStorage.setItem('activeSessionId', session.id)
     navigate(`/workout/${session.id}`)
   }
+
+  const visibleList = visibleWhileDragging(exercises, dragId)
 
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '60vh', background: 'var(--bg)' }}>
@@ -158,10 +169,22 @@ export default function DayPreview() {
 
       {/* Exercise list */}
       <div style={{ flex: 1, paddingBottom: '120px' }}>
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-          <SortableContext items={exercises.map((e) => e.id)} strategy={verticalListSortingStrategy}>
-            {exercises.map((ex) => (
-              <SortableRow key={ex.id} ex={ex} onEdit={() => setSheet({ mode: 'edit', exId: ex.id, form: { ...EMPTY_FORM, ...ex } })} />
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragStart={(e) => setDragId(e.active.id)}
+          onDragCancel={() => setDragId(null)}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext items={visibleList.map((e) => e.id)} strategy={verticalListSortingStrategy}>
+            {visibleList.map((ex, i) => (
+              <SortableRow
+                key={ex.id}
+                ex={ex}
+                isFirst={i === 0}
+                carrying={ex.id === dragId ? exercises.length - visibleList.length : 0}
+                onEdit={() => setSheet({ mode: 'edit', exId: ex.id, form: { ...EMPTY_FORM, ...ex } })}
+              />
             ))}
           </SortableContext>
         </DndContext>
@@ -178,7 +201,7 @@ export default function DayPreview() {
           </button>
         </div>
         <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: '12px 2px 0', lineHeight: 1.5 }}>
-          Hold & drag to reorder · tap an exercise to edit. A superset attaches to the exercise above it.
+          Hold & drag to reorder · tap an exercise to edit. A superset attaches to the exercise above it and moves with it.
         </p>
       </div>
 
@@ -266,7 +289,7 @@ export default function DayPreview() {
   )
 }
 
-function SortableRow({ ex, onEdit }) {
+function SortableRow({ ex, onEdit, isFirst, carrying }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: ex.id })
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -274,7 +297,7 @@ function SortableRow({ ex, onEdit }) {
     zIndex: isDragging ? 20 : undefined,
     opacity: isDragging ? 0.85 : 1,
   }
-  const isSS = ex.is_superset
+  const isSS = ex.is_superset && !isFirst
   return (
     <div ref={setNodeRef} style={style}>
       <div
@@ -304,7 +327,8 @@ function SortableRow({ ex, onEdit }) {
         <div style={{ flex: 1, minWidth: 0 }}>
           <p style={{ fontFamily: F, fontSize: isSS ? '13px' : '15px', fontWeight: 600, color: isSS ? 'var(--gold-soft)' : 'var(--text)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {ex.name}
-            {isSS && <span style={{ fontSize: '8px', letterSpacing: '0.12em', color: 'var(--gold)', border: '1px solid rgba(200,168,75,0.3)', borderRadius: '3px', padding: '0 4px', marginLeft: 7, verticalAlign: '2px' }}>SS</span>}
+            {ex.is_superset && <span style={{ fontSize: '8px', letterSpacing: '0.12em', color: 'var(--gold)', border: '1px solid rgba(200,168,75,0.3)', borderRadius: '3px', padding: '0 4px', marginLeft: 7, verticalAlign: '2px' }}>SS</span>}
+            {carrying > 0 && <span style={{ fontSize: '9px', letterSpacing: '0.1em', color: 'var(--gold)', marginLeft: 7 }}>+{carrying} SS</span>}
           </p>
           <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: '2px 0 0' }}>
             {ex.sets} × {ex.rep_min}–{ex.rep_max} · {ex.current_weight} {ex.weight_unit}
